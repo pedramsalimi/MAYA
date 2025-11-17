@@ -1,0 +1,166 @@
+<?xml version="1.0"?>
+<rdf:RDF xmlns="http://www.semanticweb.org/dc9396/ontologies/2025/10/untitled-ontology-171/"
+     xml:base="http://www.semanticweb.org/dc9396/ontologies/2025/10/untitled-ontology-171/"
+     xmlns:owl="http://www.w3.org/2002/07/owl#"
+     xmlns:rdf="http://www.w3.org/1999/02/22-rdf-syntax-ns#"
+     xmlns:xml="http://www.w3.org/XML/1998/namespace"
+     xmlns:xsd="http://www.w3.org/2001/XMLSchema#"
+     xmlns:rdfs="http://www.w3.org/2000/01/rdf-schema#"
+     xmlns:Users="http://www.w3id.org/maya-horizon/Users/">
+    <owl:Ontology rdf:about="http://www.w3id.org/maya-horizon/UserData/">
+        <owl:imports rdf:resource="http://www.w3id.org/maya-horizon/Users/"/>
+    </owl:Ontology>
+    
+
+
+    <!-- 
+    ///////////////////////////////////////////////////////////////////////////////////////
+    //
+    // Object Properties
+    //
+    ///////////////////////////////////////////////////////////////////////////////////////
+     -->
+
+    
+
+
+    <!-- http://www.w3id.org/maya-horizon/Users/hasInterest -->
+
+    <rdf:Description rdf:about="http://www.w3id.org/maya-horizon/Users/hasInterest">
+        <rdfs:label xml:lang="en">has interest</rdfs:label>
+    </rdf:Description>
+    
+
+
+    <!-- http://www.w3id.org/maya-horizon/Users/hasLocation -->
+
+    <rdf:Description rdf:about="http://www.w3id.org/maya-horizon/Users/hasLocation">
+        <rdfs:label xml:lang="en">has location</rdfs:label>
+    </rdf:Description>
+    
+
+
+    <!-- http://www.w3id.org/maya-horizon/Users/hasOccupation -->
+
+    <rdf:Description rdf:about="http://www.w3id.org/maya-horizon/Users/hasOccupation">
+        <rdfs:label xml:lang="en">has occupation</rdfs:label>
+    </rdf:Description>
+    
+
+
+    <!-- 
+    ///////////////////////////////////////////////////////////////////////////////////////
+    //
+    // Classes
+    //
+    ///////////////////////////////////////////////////////////////////////////////////////
+     -->
+
+    
+
+
+    <!-- http://www.w3id.org/maya-horizon/Users/Interest -->
+
+    <rdf:Description rdf:about="http://www.w3id.org/maya-horizon/Users/Interest">
+        <rdfs:label xml:lang="en">Interest</rdfs:label>
+    </rdf:Description>
+    
+
+
+    <!-- http://www.w3id.org/maya-horizon/Users/Location -->
+
+    <rdf:Description rdf:about="http://www.w3id.org/maya-horizon/Users/Location">
+        <rdfs:label xml:lang="en">Location</rdfs:label>
+    </rdf:Description>
+    
+
+
+    <!-- http://www.w3id.org/maya-horizon/Users/Occupation -->
+
+    <rdf:Description rdf:about="http://www.w3id.org/maya-horizon/Users/Occupation">
+        <rdfs:comment xml:lang="en">The thing that somebody does as a job or employment</rdfs:comment>
+        <rdfs:label xml:lang="en">Occupation</rdfs:label>
+    </rdf:Description>
+    
+
+
+    <!-- http://www.w3id.org/maya-horizon/Users/User -->
+
+    <rdf:Description rdf:about="http://www.w3id.org/maya-horizon/Users/User">
+        <rdfs:label xml:lang="en">User</rdfs:label>
+    </rdf:Description>
+    
+
+
+    <!-- 
+    ///////////////////////////////////////////////////////////////////////////////////////
+    //
+    // Individuals
+    //
+    ///////////////////////////////////////////////////////////////////////////////////////
+     -->
+
+    
+
+
+    <!-- http://www.w3id.org/maya-horizon/UserData/AIInterest -->
+
+    <owl:NamedIndividual rdf:about="http://www.w3id.org/maya-horizon/UserData/AIInterest">
+        <rdf:type rdf:resource="http://www.w3id.org/maya-horizon/Users/Interest"/>
+        <Users:description xml:lang="en">Artificial Intelligence</Users:description>
+        <rdfs:label xml:lang="en">Artificial Intelligence</rdfs:label>
+    </owl:NamedIndividual>
+    
+
+
+    <!-- http://www.w3id.org/maya-horizon/UserData/AberdeenLocation -->
+
+    <owl:NamedIndividual rdf:about="http://www.w3id.org/maya-horizon/UserData/AberdeenLocation">
+        <rdf:type rdf:resource="http://www.w3id.org/maya-horizon/Users/Location"/>
+        <Users:description xml:lang="en">Aberdeen, UK</Users:description>
+        <rdfs:comment xml:lang="en">The city of Aberdeen, located in North East of Scotland.</rdfs:comment>
+        <rdfs:label xml:lang="en">Aberdeen, UK</rdfs:label>
+    </owl:NamedIndividual>
+    
+
+
+    <!-- http://www.w3id.org/maya-horizon/UserData/Pedram -->
+
+    <owl:NamedIndividual rdf:about="http://www.w3id.org/maya-horizon/UserData/Pedram">
+        <rdf:type rdf:resource="http://www.w3id.org/maya-horizon/Users/User"/>
+        <Users:hasInterest rdf:resource="http://www.w3id.org/maya-horizon/UserData/AIInterest"/>
+        <Users:hasLocation rdf:resource="http://www.w3id.org/maya-horizon/UserData/AberdeenLocation"/>
+        <Users:hasOccupation rdf:resource="http://www.w3id.org/maya-horizon/UserData/ResearchFellow"/>
+        <Users:fullname>Pedram Salimi</Users:fullname>
+        <rdfs:label xml:lang="en">Pedram Salimi</rdfs:label>
+    </owl:NamedIndividual>
+    
+
+
+    <!-- http://www.w3id.org/maya-horizon/UserData/ResearchFellow -->
+
+    <owl:NamedIndividual rdf:about="http://www.w3id.org/maya-horizon/UserData/ResearchFellow">
+        <rdf:type rdf:resource="http://www.w3id.org/maya-horizon/Users/Occupation"/>
+        <Users:description xml:lang="en">Research Fellow</Users:description>
+        <rdfs:label xml:lang="en">Research Fellow</rdfs:label>
+    </owl:NamedIndividual>
+    
+
+
+    <!-- 
+    ///////////////////////////////////////////////////////////////////////////////////////
+    //
+    // Annotations
+    //
+    ///////////////////////////////////////////////////////////////////////////////////////
+     -->
+
+    <rdf:Description rdf:about="http://www.w3id.org/maya-horizon/Users/hasConnection">
+        <rdfs:label xml:lang="en">has connection</rdfs:label>
+    </rdf:Description>
+</rdf:RDF>
+
+
+
+<!-- Generated by the OWL API (version 4.5.29.2024-05-13T12:11:03Z) https://github.com/owlcs/owlapi -->
+

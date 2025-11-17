@@ -1,0 +1,79 @@
+{
+  "base_iri": "http://www.w3id.org/maya-horizon/Users/",
+  "classes": {
+    "Interest": {
+      "iri": "http://www.w3id.org/maya-horizon/Users/Interest",
+      "label": "Interest",
+      "description": null,
+      "properties": {}
+    },
+    "Location": {
+      "iri": "http://www.w3id.org/maya-horizon/Users/Location",
+      "label": "Location",
+      "description": null,
+      "properties": {}
+    },
+    "Occupation": {
+      "iri": "http://www.w3id.org/maya-horizon/Users/Occupation",
+      "label": "Occupation",
+      "description": null,
+      "properties": {}
+    },
+    "User": {
+      "iri": "http://www.w3id.org/maya-horizon/Users/User",
+      "label": "User",
+      "description": null,
+      "properties": {}
+    },
+    "UserProfile": {
+      "iri": "http://www.w3id.org/maya-horizon/Users/UserProfile",
+      "label": "UserProfile",
+      "description": null,
+      "properties": {}
+    }
+  },
+  "orphan_properties": {
+    "hasConnection": {
+      "iri": "http://www.w3id.org/maya-horizon/Users/hasConnection",
+      "kind": "object",
+      "target_classes": [],
+      "label": "hasConnection",
+      "description": null
+    },
+    "hasInterest": {
+      "iri": "http://www.w3id.org/maya-horizon/Users/hasInterest",
+      "kind": "object",
+      "target_classes": [],
+      "label": "hasInterest",
+      "description": null
+    },
+    "hasLocation": {
+      "iri": "http://www.w3id.org/maya-horizon/Users/hasLocation",
+      "kind": "object",
+      "target_classes": [],
+      "label": "hasLocation",
+      "description": null
+    },
+    "hasOccupation": {
+      "iri": "http://www.w3id.org/maya-horizon/Users/hasOccupation",
+      "kind": "object",
+      "target_classes": [],
+      "label": "hasOccupation",
+      "description": null
+    },
+    "description": {
+      "iri": "http://www.w3id.org/maya-horizon/Users/description",
+      "kind": "datatype",
+      "type": "string",
+      "label": "description",
+      "description": null
+    },
+    "fullname": {
+      "iri": "http://www.w3id.org/maya-horizon/Users/fullname",
+      "kind": "datatype",
+      "type": "string",
+      "label": "fullname",
+      "description": null
+    }
+  }
+}

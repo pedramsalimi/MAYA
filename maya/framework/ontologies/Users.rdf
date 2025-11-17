@@ -1,0 +1,179 @@
+<?xml version="1.0"?>
+<rdf:RDF xmlns="http://www.w3id.org/maya-horizon/Users//"
+     xml:base="http://www.w3id.org/maya-horizon/Users//"
+     xmlns:owl="http://www.w3.org/2002/07/owl#"
+     xmlns:rdf="http://www.w3.org/1999/02/22-rdf-syntax-ns#"
+     xmlns:xml="http://www.w3.org/XML/1998/namespace"
+     xmlns:xsd="http://www.w3.org/2001/XMLSchema#"
+     xmlns:rdfs="http://www.w3.org/2000/01/rdf-schema#">
+    <owl:Ontology rdf:about="http://www.w3id.org/maya-horizon/Users/"/>
+    
+
+
+    <!-- 
+    ///////////////////////////////////////////////////////////////////////////////////////
+    //
+    // Object Properties
+    //
+    ///////////////////////////////////////////////////////////////////////////////////////
+     -->
+
+    
+
+
+    <!-- http://www.w3id.org/maya-horizon/Users/hasConnection -->
+
+    <owl:ObjectProperty rdf:about="http://www.w3id.org/maya-horizon/Users/hasConnection">
+        <rdf:type rdf:resource="http://www.w3.org/2002/07/owl#SymmetricProperty"/>
+    </owl:ObjectProperty>
+    
+
+
+    <!-- http://www.w3id.org/maya-horizon/Users/hasInterest -->
+
+    <owl:ObjectProperty rdf:about="http://www.w3id.org/maya-horizon/Users/hasInterest"/>
+    
+
+
+    <!-- http://www.w3id.org/maya-horizon/Users/hasLocation -->
+
+    <owl:ObjectProperty rdf:about="http://www.w3id.org/maya-horizon/Users/hasLocation"/>
+    
+
+
+    <!-- http://www.w3id.org/maya-horizon/Users/hasOccupation -->
+
+    <owl:ObjectProperty rdf:about="http://www.w3id.org/maya-horizon/Users/hasOccupation">
+        <rdfs:subPropertyOf rdf:resource="http://www.w3.org/2002/07/owl#topObjectProperty"/>
+    </owl:ObjectProperty>
+    
+
+
+    <!-- 
+    ///////////////////////////////////////////////////////////////////////////////////////
+    //
+    // Data properties
+    //
+    ///////////////////////////////////////////////////////////////////////////////////////
+     -->
+
+    
+
+
+    <!-- http://www.w3id.org/maya-horizon/Users/description -->
+
+    <owl:DatatypeProperty rdf:about="http://www.w3id.org/maya-horizon/Users/description">
+        <rdfs:range rdf:resource="http://www.w3.org/2001/XMLSchema#string"/>
+    </owl:DatatypeProperty>
+    
+
+
+    <!-- http://www.w3id.org/maya-horizon/Users/fullname -->
+
+    <owl:DatatypeProperty rdf:about="http://www.w3id.org/maya-horizon/Users/fullname">
+        <rdfs:range rdf:resource="http://www.w3.org/2001/XMLSchema#string"/>
+    </owl:DatatypeProperty>
+    
+
+
+    <!-- 
+    ///////////////////////////////////////////////////////////////////////////////////////
+    //
+    // Classes
+    //
+    ///////////////////////////////////////////////////////////////////////////////////////
+     -->
+
+    
+
+
+    <!-- http://www.w3id.org/maya-horizon/Users/Interest -->
+
+    <owl:Class rdf:about="http://www.w3id.org/maya-horizon/Users/Interest">
+        <rdfs:subClassOf>
+            <owl:Restriction>
+                <owl:onProperty rdf:resource="http://www.w3id.org/maya-horizon/Users/description"/>
+                <owl:qualifiedCardinality rdf:datatype="http://www.w3.org/2001/XMLSchema#nonNegativeInteger">1</owl:qualifiedCardinality>
+                <owl:onDataRange rdf:resource="http://www.w3.org/2001/XMLSchema#string"/>
+            </owl:Restriction>
+        </rdfs:subClassOf>
+    </owl:Class>
+    
+
+
+    <!-- http://www.w3id.org/maya-horizon/Users/Location -->
+
+    <owl:Class rdf:about="http://www.w3id.org/maya-horizon/Users/Location">
+        <rdfs:subClassOf>
+            <owl:Restriction>
+                <owl:onProperty rdf:resource="http://www.w3id.org/maya-horizon/Users/description"/>
+                <owl:qualifiedCardinality rdf:datatype="http://www.w3.org/2001/XMLSchema#nonNegativeInteger">1</owl:qualifiedCardinality>
+                <owl:onDataRange rdf:resource="http://www.w3.org/2001/XMLSchema#string"/>
+            </owl:Restriction>
+        </rdfs:subClassOf>
+    </owl:Class>
+    
+
+
+    <!-- http://www.w3id.org/maya-horizon/Users/Occupation -->
+
+    <owl:Class rdf:about="http://www.w3id.org/maya-horizon/Users/Occupation">
+        <rdfs:subClassOf>
+            <owl:Restriction>
+                <owl:onProperty rdf:resource="http://www.w3id.org/maya-horizon/Users/description"/>
+                <owl:qualifiedCardinality rdf:datatype="http://www.w3.org/2001/XMLSchema#nonNegativeInteger">1</owl:qualifiedCardinality>
+                <owl:onDataRange rdf:resource="http://www.w3.org/2001/XMLSchema#string"/>
+            </owl:Restriction>
+        </rdfs:subClassOf>
+    </owl:Class>
+    
+
+
+    <!-- http://www.w3id.org/maya-horizon/Users/User -->
+
+    <owl:Class rdf:about="http://www.w3id.org/maya-horizon/Users/User">
+        <rdfs:subClassOf>
+            <owl:Restriction>
+                <owl:onProperty rdf:resource="http://www.w3id.org/maya-horizon/Users/hasConnection"/>
+                <owl:allValuesFrom rdf:resource="http://www.w3id.org/maya-horizon/Users/User"/>
+            </owl:Restriction>
+        </rdfs:subClassOf>
+        <rdfs:subClassOf>
+            <owl:Restriction>
+                <owl:onProperty rdf:resource="http://www.w3id.org/maya-horizon/Users/hasInterest"/>
+                <owl:allValuesFrom rdf:resource="http://www.w3id.org/maya-horizon/Users/Interest"/>
+            </owl:Restriction>
+        </rdfs:subClassOf>
+        <rdfs:subClassOf>
+            <owl:Restriction>
+                <owl:onProperty rdf:resource="http://www.w3id.org/maya-horizon/Users/hasOccupation"/>
+                <owl:allValuesFrom rdf:resource="http://www.w3id.org/maya-horizon/Users/Occupation"/>
+            </owl:Restriction>
+        </rdfs:subClassOf>
+        <rdfs:subClassOf>
+            <owl:Restriction>
+                <owl:onProperty rdf:resource="http://www.w3id.org/maya-horizon/Users/hasLocation"/>
+                <owl:minQualifiedCardinality rdf:datatype="http://www.w3.org/2001/XMLSchema#nonNegativeInteger">1</owl:minQualifiedCardinality>
+                <owl:onClass rdf:resource="http://www.w3id.org/maya-horizon/Users/Location"/>
+            </owl:Restriction>
+        </rdfs:subClassOf>
+        <rdfs:subClassOf>
+            <owl:Restriction>
+                <owl:onProperty rdf:resource="http://www.w3id.org/maya-horizon/Users/fullname"/>
+                <owl:qualifiedCardinality rdf:datatype="http://www.w3.org/2001/XMLSchema#nonNegativeInteger">1</owl:qualifiedCardinality>
+                <owl:onDataRange rdf:resource="http://www.w3.org/2001/XMLSchema#string"/>
+            </owl:Restriction>
+        </rdfs:subClassOf>
+    </owl:Class>
+    
+
+
+    <!-- http://www.w3id.org/maya-horizon/Users/UserProfile -->
+
+    <owl:Class rdf:about="http://www.w3id.org/maya-horizon/Users/UserProfile"/>
+</rdf:RDF>
+
+
+
+<!-- Generated by the OWL API (version 4.5.29.2024-05-13T12:11:03Z) https://github.com/owlcs/owlapi -->
+

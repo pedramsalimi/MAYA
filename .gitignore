@@ -1,0 +1,58 @@
+# ---- OS / editor junk ----
+.DS_Store
+Thumbs.db
+*.swp
+*.swo
+.idea/
+.vscode/
+
+# ---- Python bytecode / caches ----
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+*.pyd
+*.so
+*.dll
+
+# ---- Environments ----
+.venv/
+venv/
+env/
+.python-version
+
+# ---- Build / packaging ----
+build/
+dist/
+*.egg-info/
+.eggs/
+
+# ---- Test / tooling caches ----
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.pyre/
+.pytype/
+.coverage
+cov.xml
+htmlcov/
+
+# ---- Jupyter ----
+.ipynb_checkpoints/
+
+# ---- Logs and runtime artifacts ----
+logfile
+logs/
+*.log
+
+# ---- Local config / secrets (if you add them) ----
+.env
+.env.*
+*.env
+
+# ---- UV / lockfiles (keep uv.lock if you want reproducible envs) ----
+# uv.lock
+
+# ---- Data / large files (optional section) ----
+# If you DON'T want to version your PDFs (large / licensed), uncomment:
+# maya/data/health_papers/*.pdf
