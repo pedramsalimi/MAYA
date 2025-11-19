@@ -1,5 +1,6 @@
 import uuid
 import json
+import webbrowser
 from datetime import datetime
 from trustcall import create_extractor
 from typing import Optional, Literal, List, Dict, Any, Tuple, TypedDict
@@ -19,13 +20,16 @@ from langchain_openai import AzureChatOpenAI
 from maya.agents.config import load_agent_specs
 from maya.framework.memory import get_postgres_memory   
 from dotenv import load_dotenv
-from prompts import TRUSTCALL_INSTRUCTION, MEMORY_UPDATE_INSTRUCTION, SUPERVISOR_SYSTEM_MESSAGE
+from .prompts import TRUSTCALL_INSTRUCTION, MEMORY_UPDATE_INSTRUCTION, SUPERVISOR_SYSTEM_MESSAGE
 
 
 
 load_dotenv()
 # model = ChatOpenAI(model="gpt-4o-mini", temperature=0)
 model = AzureChatOpenAI(azure_deployment="gpt-4o-mini", temperature=0, api_version="2024-12-01-preview", azure_endpoint="https://mayaagent.openai.azure.com/")
+# SCAN_PORTAL_URL = "https://scan.jafarapp.com"
+SCAN_PORTAL_URL = "https://plugin-rc.intelliprove.com/?action_token=eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJ1c2VyIjp7ImVtYWlsIjoiIiwiY3VzdG9tZXIiOiJTRUxGQkFDSy1ERVYiLCJncm91cCI6InVzZXIiLCJtYXhfbWVhc3VyZW1lbnRfY291bnQiOjk5OTksInVzZXJfaWQiOiJiYzc1OTY0MzBjZWE0OTEyYTdmNTI5NzczN2Q4ZmFhYSIsImF1dGgwX3VzZXJfaWQiOm51bGx9LCJtZXRhIjp7fSwiZXhwIjoxNzYzNTgzNDc3fQ.siccXuZLfbw4wdMryddlCovL0PZOya7tsKlhVIHr1hI&language=en&duration=30"
+
 def _load_agents() -> Tuple[List[Any], Dict[str, str]]:
     specs = load_agent_specs()
     agents: List[Any] = []
@@ -46,10 +50,12 @@ def _load_agents() -> Tuple[List[Any], Dict[str, str]]:
 
 
 
+
 # Update memory tool
 class RouteState(TypedDict):
-    """ Decision on what memory type to update """
-    route_type: Literal['user_profile', 'general_memory', 'health_rag']
+    """Routing decision for supervisor -> tool nodes."""
+
+    route_type: Literal['user_profile', 'general_memory', 'health_rag', 'scan_portal']
 
 class Memory(BaseModel):
     content: str = Field(description="The main content of the memory. For example: User expressed interest in learning about French.")
@@ -198,6 +204,63 @@ def build_supervisor():
         tool_calls = state['messages'][-1].tool_calls
         return {"messages": [{"role": "tool", "content": "updated profile", "tool_call_id":tool_calls[0]['id']}]}
 
+    def scan_portal_node(
+        state: MessagesState,
+        config: RunnableConfig,
+        store: BaseStore,
+    ) -> Dict[str, List[Any]]:
+        """Launch the facial scan portal for biomarker capture."""
+
+        messages = state["messages"]
+        last = messages[-1] if messages else None
+        tool_call_id = (
+            last.tool_calls[0]["id"]
+            if isinstance(last, AIMessage) and getattr(last, "tool_calls", None)
+            else None
+        )
+
+        def send(text: str) -> Dict[str, List[Any]]:
+            text = (text or "").strip() or "Scan portal ready."
+            if tool_call_id:
+                return {
+                    "messages": [
+                        ToolMessage(
+                            content=text,
+                            tool_call_id=tool_call_id,
+                            name="RouteState",
+                        )
+                    ]
+                }
+            return {"messages": [AIMessage(content=text)]}
+
+        url = SCAN_PORTAL_URL
+        if isinstance(config, dict):
+            configurable = config.get("configurable")
+            if isinstance(configurable, dict):
+                url = configurable.get("scan_url", url) or url
+
+        try:
+            launched = webbrowser.open(url, new=2, autoraise=True)
+            error_text = None
+        except Exception as exc:
+            launched = False
+            error_text = str(exc)
+
+        if launched:
+            message = (
+                f"I've opened {url} in your browser. After starting the scan, keep your face centered and "
+                "follow the scan instructions so we can capture the biomarkers. I'll be here when you're done!"
+            )
+        else:
+            message = (
+                f"I couldn't automatically open {url}. "
+                "Please open it manually and follow the on-screen prompts."
+            )
+            if error_text:
+                message += f"\n\n(Reason: {error_text})"
+
+        return send(message)
+
     def health_rag_node(
         state: MessagesState,
         config: RunnableConfig,
@@ -318,13 +381,14 @@ def build_supervisor():
         
         return send(summary)
 
-    def route_message(state: MessagesState, config: RunnableConfig, store: BaseStore) -> Literal[END, "update_profile", "update_memory", "health_rag"]:
+    def route_message(state: MessagesState, config: RunnableConfig, store: BaseStore) -> Literal[END, "update_profile", "update_memory", "health_rag", "scan_portal"]:
 
         """
         Use this tool to decide where to route the user’s request:
         - 'health_rag' for ANY medical/health-related question
         - 'user_profile' for stable personal facts
-        - 'general_memory' for experiences / events / feelings.
+        - 'general_memory' for experiences / events / feelings
+        - 'scan_portal' when the user asks to run the facial scan.
         """
 
         message = state['messages'][-1]
@@ -338,6 +402,8 @@ def build_supervisor():
                 return "update_memory"
             elif tool_call['args']['route_type'] == "health_rag":
                 return "health_rag"
+            elif tool_call['args']['route_type'] == "scan_portal":
+                return "scan_portal"
             else:
                 raise ValueError
             
@@ -354,6 +420,7 @@ def build_supervisor():
     builder.add_node(supervisor)
     builder.add_node(update_profile)
     builder.add_node(update_memory)
+    builder.add_node("scan_portal", scan_portal_node)
 
     for agent in agents:
         if agent.name != "health_rag":
@@ -365,6 +432,7 @@ def build_supervisor():
     builder.add_conditional_edges("supervisor", route_message)
     builder.add_edge("update_profile", "supervisor")
     builder.add_edge("update_memory", "supervisor")
+    builder.add_edge("scan_portal", "supervisor")
     builder.add_edge("health_rag", "supervisor")
 
 

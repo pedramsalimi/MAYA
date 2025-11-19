@@ -171,7 +171,7 @@ def main() -> None:
         if final_text:
             final_text = strip_markdown(final_text)
             final_text = strip_citations_and_references(final_text)
-            print(f"\n\n***************\n\nMAYA: {final_text}")
+            print(f"\n***************\n\nMAYA: {final_text}")
             if speech_synthesizer:
                 try:
                     result = speech_synthesizer.speak_text_async(final_text).get()

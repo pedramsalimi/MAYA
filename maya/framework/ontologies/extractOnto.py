@@ -66,38 +66,7 @@ def _map_xsd_datatype(dt: URIRef) -> str:
 
 
 def ontology_to_llm_json_dict(input_path: str | Path) -> Dict[str, Any]:
-    """
-    Load an OWL/RDF ontology and return a *LLM-friendly* JSON-like dict.
 
-    Structure:
-
-    {
-      "base_iri": "...",
-      "classes": {
-        "User": {
-          "iri": "...Users/User",
-          "label": "User",
-          "description": "Optional human-readable comment",
-          "properties": {
-            "fullname": {
-              "iri": "...Users/fullname",
-              "kind": "datatype",
-              "type": "string",
-              "description": "Full name of the user"
-            },
-            "hasLocation": {
-              "iri": "...Users/hasLocation",
-              "kind": "object",
-              "target_classes": ["Location"],
-              "description": "User's location"
-            }
-          }
-        },
-        "Location": { ... }
-      },
-      "orphan_properties": { ... }  # properties without explicit domain
-    }
-    """
     input_path = str(input_path)
     g = Graph()
     g.parse(input_path)
@@ -193,14 +162,12 @@ def ontology_to_llm_json_dict(input_path: str | Path) -> Dict[str, Any]:
     return result
 
 
-# Example usage in code (no CLI):
 if __name__ == "__main__":
     onto_path = "/Users/p.salimi1/Documents/MAYA/maya/framework/ontologies/UsersData.rdf"  # <- change to your file path
     data = ontology_to_llm_json_dict(onto_path)
 
-    # Optional: write to JSON file next to the ontology
     output_path = str(Path(onto_path).with_suffix(".llm.json"))
     with open(output_path, "w", encoding="utf-8") as f:
         json.dump(data, f, ensure_ascii=False, indent=2)
 
-    print(f"Wrote LLM-friendly JSON ontology to: {output_path}")
+    print(f"Wrote JSON ontology to: {output_path}")

@@ -1,167 +1,134 @@
-def main():
-    print("Hello from maya!")
+from __future__ import annotations
+
+import os
+from threading import Lock
+from typing import Any, Dict, Optional
+
+from dotenv import load_dotenv
+from flask import Flask, jsonify, request
+from maya.framework.supervisor import prompts
+from maya.framework.supervisor.factory import build_supervisor
+from maya.framework.supervisor.utils import (
+    strip_citations_and_references,
+    strip_markdown,
+)
+
+load_dotenv()
+
+app = Flask(__name__)
+
+_state_lock = Lock()
+_run_state: Dict[str, Any] = {"graph": None, "base_config": None}
+
+
+def _init_run_copy():
+    """Create the supervisor graph and its base config (mirrors run.py setup)."""
+    user_id = os.getenv("MAYA_RUN_USER_ID", "web_user")
+    thread_id = os.getenv("MAYA_RUN_THREAD_ID", "web_thread")
+    base_config = {
+        "configurable": {"thread_id": thread_id, "user_id": user_id},
+        "recursion_limit": 40,
+    }
+    graph = build_supervisor()
+    return graph, base_config
+
+
+def _clone_config(base_config: Dict[str, Any]) -> Dict[str, Any]:
+    cloned = dict(base_config)
+    configurable = base_config.get("configurable") or {}
+    cloned["configurable"] = dict(configurable)
+    return cloned
+
+
+def _run_conversation(graph, base_config, user_text: str) -> str:
+    payload = {"messages": [{"role": "user", "content": user_text}]}
+    config = _clone_config(base_config)
+
+    final_text: Optional[str] = None
+    for chunk in graph.stream(
+        payload,
+        config=config,
+        stream_mode="updates",
+        subgraphs=True,
+    ):
+        update = chunk[1] if (isinstance(chunk, tuple) and len(chunk) == 2) else chunk
+        if not isinstance(update, dict):
+            continue
+
+        for node_payload in update.values():
+            if isinstance(node_payload, list):
+                messages = node_payload
+            elif isinstance(node_payload, dict):
+                messages = node_payload.get("messages")
+                if isinstance(messages, dict):
+                    messages = list(messages.values())
+                elif messages is None:
+                    messages = []
+                elif not isinstance(messages, list):
+                    messages = [messages]
+            else:
+                continue
+
+            if not messages:
+                continue
+
+            last = messages[-1]
+            if isinstance(last, dict):
+                role = last.get("role") or last.get("type")
+                content = last.get("content")
+            else:
+                role = getattr(last, "type", None)
+                content = getattr(last, "content", None)
+
+            if role in {"assistant", "ai"} and isinstance(content, str) and content.strip():
+                final_text = content.strip()
+
+    if not final_text:
+        return ""
+
+    cleaned = strip_markdown(final_text)
+    cleaned = strip_citations_and_references(cleaned)
+    return cleaned
+
+
+@app.post("/start")
+def start_session():
+    payload = request.get_json(silent=True) or {}
+    status = str(payload.get("status", "")).strip().upper()
+    if status != "START":
+        return jsonify({"error": "Send {'status': 'START'} to initialize the session."}), 400
+
+    graph, base_config = _init_run_copy()
+    with _state_lock:
+        _run_state["graph"] = graph
+        _run_state["base_config"] = base_config
+
+    return jsonify({"message": "Supervisor session initialised."})
+
+
+@app.post("/conversation")
+def conversation():
+    payload = request.get_json(silent=True) or {}
+    user_message = (payload.get("user_message") or "").strip()
+    if not user_message:
+        return jsonify({"error": "Missing user_message."}), 400
+
+    with _state_lock:
+        graph = _run_state.get("graph")
+        base_config = _run_state.get("base_config")
+
+    if graph is None or base_config is None:
+        return jsonify({"error": "Session not started. Call /start first."}), 400
+
+    try:
+        response_text = _run_conversation(graph, base_config, user_message)
+    except Exception as exc:  # pragma: no cover - surface runtime failures
+        return jsonify({"error": f"Conversation failed: {exc}"}), 500
+
+    return jsonify({"response": response_text})
 
 
 if __name__ == "__main__":
-    main()
-
-
-
-# old factory.py
-# maya/framework/supervisor/factory.py
-# from __future__ import annotations
-
-# import importlib
-# import os
-# from typing import Any, Dict, List, Tuple
-
-# from typing_extensions import TypedDict, Annotated, NotRequired
-# from pydantic import BaseModel, Field
-
-# from langchain.chat_models import init_chat_model
-# from langchain_core.messages import AnyMessage, SystemMessage
-# from langgraph.graph import StateGraph, START, END
-# from langgraph.graph.message import add_messages
-# from langgraph.managed.is_last_step import RemainingSteps
-# from langgraph.types import Command  # ← correct v1 import
-
-# from maya.agents.config import load_agent_specs
-# from maya.framework.memory import get_postgres_memory
-
-# from maya.framework.supervisor import prompts
-# # --------------------------- State ---------------------------
-
-# class GlobalState(TypedDict):
-#     # Required LangGraph message channel & controlled-steps
-#     messages: Annotated[List[AnyMessage], add_messages]
-#     remaining_steps: RemainingSteps
-#     # Optional: for observability
-#     active_agent: NotRequired[str]
-
-
-# # ---------------------- Agent loading ------------------------
-
-# def _build_agent(agent_id: str, spec: Dict[str, Any]):
-#     module = importlib.import_module(f"maya.agents.{agent_id}.agent")
-#     app = module.build(spec)
-#     if not getattr(app, "name", None):
-#         raise RuntimeError(f"Agent '{agent_id}' must compile with a name.")
-#     return app
-
-# def _load_agents_and_descriptions() -> Tuple[List[Any], Dict[str, str]]:
-#     specs = load_agent_specs()
-#     agents: List[Any] = []
-#     descs: Dict[str, str] = {}
-#     for agent_id, spec in specs.items():
-#         if spec.get("disabled"):
-#             continue
-#         agent = _build_agent(agent_id, spec)
-#         agents.append(agent)
-#         descs[agent.name] = (spec.get("description") or "").strip()
-#     if not agents:
-#         raise RuntimeError("No enabled agents configured.")
-#     return agents, descs
-
-
-# # --------------------- Router (structured) --------------------
-
-# class RouteChoice(BaseModel):
-#     """LLM-structured routing output."""
-#     route: str = Field(..., description="Exact agent name to handle the message, or 'none'.")
-#     reason: str | None = Field(None, description="Optional brief rationale.")
-
-# def _router_prompt(agent_descriptions: Dict[str, str]) -> str:
-#     roster = "\n".join(
-#         f"- {name}: {desc or 'No description provided.'}"
-#         for name, desc in agent_descriptions.items()
-#     ) or "- No specialists available."
-#     allowed = ", ".join(sorted(agent_descriptions.keys())) or "none"
-#     return (
-#         "You are MAYA's router. Choose exactly ONE specialist to handle the user's latest message.\n"
-#         "Respond ONLY as JSON matching the schema {route: <agent|none>, reason: <string>}.\n"
-#         f"Valid values for 'route': [{allowed}] or 'none'. Do NOT answer the user's question.\n\n"
-#         "Specialists:\n" + roster
-#     )
-
-# # def _last_user(msgs: List[AnyMessage] | None) -> AnyMessage | None:
-# #     msgs = msgs or []
-# #     for m in reversed(msgs):
-# #         role = getattr(m, "type", None) or (m.get("role") if isinstance(m, dict) else None)
-# #         if role in {"human", "user"}:
-# #             return m
-# #     return None
-
-# def _last_user(msgs: List[AnyMessage] | None) -> AnyMessage | None:
-#     msgs = msgs or []
-#     if not msgs:
-#         return None
-
-#     last = msgs[-1]
-#     role = getattr(last, "type", None) or (last.get("role") if isinstance(last, dict) else None)
-#     return last if role in {"human", "user"} else None
-
-# # ---------------------- Supervisor build ---------------------
-
-# def build_supervisor(
-#     *,
-#     model_name: str | None = None,
-#     supervisor_name: str = "supervisor",
-#     store=None,
-#     checkpointer=None,
-# ):
-#     """
-#     Native LangGraph supervisor:
-#       • Router uses structured output to select agent.
-#       • Returns Command(goto='<agent_name>') to jump.
-#       • Each agent runs once for this turn; then END.
-
-#     No injected 'return' tool → workers behave exactly as in isolation.
-#     """
-#     model_name = model_name or os.getenv("MAYA_SUPERVISOR_MODEL", "openai:gpt-4o-mini")
-
-#     agents, descriptions = _load_agents_and_descriptions()
-#     names = {a.name for a in agents}
-#     store, checkpointer = get_postgres_memory()
-
-#     for a in agents:
-#         if not getattr(a, "name", None):
-#             raise ValueError("Every agent must have a stable `name` (e.g., 'health_rag').")
-
-#     base_llm = init_chat_model(model_name, temperature=0)
-#     router_llm = base_llm.with_structured_output(RouteChoice)
-#     router_sys = SystemMessage(content=_router_prompt(descriptions))
-#     supervisor_sys = SystemMessage(content=prompts.system(descriptions))
-#     def router_node(state: GlobalState):
-#         user = _last_user(state.get("messages"))
-#         if user is None:
-#             return Command(goto=END)
-
-#         choice = router_llm.invoke([router_sys, user])
-#         target = (choice.route or "").strip()
-
-#         if target in names:
-#             # record selection (optional) and jump to the agent
-#             return Command(goto=target, update={"active_agent": target})
-
-#         # Small-talk/meta or invalid → answer briefly here and end
-#         # smalltalk = base_llm.invoke([
-#         #     SystemMessage(content="You are MAYA. Respond briefly and warmly. No tools."),
-#         #     user,
-#         # ])
-#         # # Append the reply to history so your CLI prints it
-#         # return Command(goto=END, update={"messages": [smalltalk]})
-#         history = list(state.get("messages") or [])
-#         reply = base_llm.invoke([supervisor_sys, *history[-8:]])  # trim if needed
-#         return Command(goto=END, update={"messages": [reply]})
-
-#     # Build: START -> router -> (goto agent) -> END
-#     g = StateGraph(GlobalState)
-#     g.add_node(supervisor_name, router_node)
-
-#     for a in agents:
-#         g.add_node(a.name, a)   # your existing agent (works unchanged)
-#         g.add_edge(a.name, END)
-
-#     g.add_edge(START, supervisor_name)
-
-#     return g.compile(name=supervisor_name, store=store, checkpointer=checkpointer)
+    debug_enabled = os.getenv("FLASK_DEBUG") == "1"
+    port = int(os.getenv("PORT", "8000"))
+    app.run(host="0.0.0.0", port=port, debug=debug_enabled)
