@@ -2,11 +2,9 @@ from __future__ import annotations
 
 import os
 import sys
-import queue
 from io import BytesIO
 from pathlib import Path
 
-import numpy as np
 import sounddevice as sd
 import soundfile as sf
 from dotenv import load_dotenv
@@ -22,7 +20,6 @@ if __package__ in {None, ""}:
     from maya.framework.supervisor.factory import build_supervisor
 else:
     from .factory import build_supervisor
-
 
 def main() -> None:
     load_dotenv()
@@ -47,17 +44,9 @@ def main() -> None:
         azure_key = os.getenv("AZURE_OPENAI_WHISPER_API_KEY")
         azure_endpoint = os.getenv("AZURE_OPENAI_WHISPER_ENDPOINT")
         azure_deployment = os.getenv("AZURE_OPENAI_DEPLOYMENT_WHISPER")
-        azure_version = (
-            os.getenv("AZURE_OPENAI_WHISPER_API_VERSION")
-            or os.getenv("AZURE_OPENAI_API_VERSION")
-            or "2024-06-01"
-        )
+        azure_version = os.getenv("AZURE_OPENAI_WHISPER_API_VERSION") or os.getenv("AZURE_OPENAI_API_VERSION") or "2024-06-01"
         if azure_key and azure_endpoint and azure_deployment:
-            base_endpoint = (
-                azure_endpoint.split("/openai/")[0]
-                if "/openai/" in azure_endpoint
-                else azure_endpoint
-            )
+            base_endpoint = azure_endpoint.split("/openai/")[0] if "/openai/" in azure_endpoint else azure_endpoint
             whisper_model = azure_deployment
             whisper_client = AzureOpenAI(
                 api_key=azure_key,
@@ -65,10 +54,8 @@ def main() -> None:
                 azure_endpoint=base_endpoint,
             )
 
-    voice_seconds = float(os.getenv("MAYA_VOICE_SECONDS", "20"))
+    voice_seconds = float(os.getenv("MAYA_VOICE_SECONDS", "6"))
     voice_rate = int(os.getenv("MAYA_VOICE_SAMPLE_RATE", "16000"))
-    voice_silence_seconds = float(os.getenv("MAYA_VOICE_SILENCE_SECONDS", "2.0"))
-    voice_silence_threshold = float(os.getenv("MAYA_VOICE_SILENCE_THRESHOLD", "0.015"))
 
     speech_synthesizer = None
     speech_voice = os.getenv("AZURE_SPEECH_VOICE", "en-GB-RyanNeural")
@@ -107,67 +94,15 @@ def main() -> None:
         # # ONLY VOICE
         # if whisper_client:
         #     user_input = "/voice"
-        # # # ONLY VOICE
+        # # # ONLY VOICE   
         if user_input == "/voice":
             if whisper_client is None:
                 print("Whisper key not configured. Please provide text input instead.")
                 continue
 
-            print(f"Recording... speak and pause to stop (max {voice_seconds:.1f}s)")
-
-            audio_queue: queue.Queue[np.ndarray] = queue.Queue()
-            recorded_blocks: list[np.ndarray] = []
-            silence_frames_target = int(voice_silence_seconds * voice_rate)
-            max_frames = int(voice_seconds * voice_rate)
-            silence_run = 0
-            total_frames = 0
-            noise_floor = voice_silence_threshold
-            max_level = 0.0
-
-            def callback(indata: np.ndarray, frames: int, _time, status) -> None:
-                if status:
-                    print(f"[audio] {status}", file=sys.stderr)
-                audio_queue.put(indata.copy())
-
-            with sd.InputStream(
-                samplerate=voice_rate,
-                channels=1,
-                dtype="float32",
-                callback=callback,
-            ):
-                while True:
-                    block = audio_queue.get()
-                    recorded_blocks.append(block)
-                    total_frames += len(block)
-
-                    block_level = float(np.sqrt(np.mean(np.square(block))))
-                    max_level = max(max_level, block_level)
-
-                    # Track ambient noise only on quieter slices to avoid letting speech inflate the floor.
-                    if block_level < voice_silence_threshold * 4:
-                        noise_floor = 0.9 * noise_floor + 0.1 * block_level
-
-                    effective_threshold = max(
-                        voice_silence_threshold,
-                        noise_floor * 3.0,
-                        max_level * 0.05,
-                    )
-
-                    if block_level < effective_threshold:
-                        silence_run += len(block)
-                    else:
-                        silence_run = 0
-
-                    if silence_run >= silence_frames_target:
-                        break
-                    if total_frames >= max_frames:
-                        break
-
-            if not recorded_blocks:
-                print("No speech detected. Try again.")
-                continue
-
-            frames = np.concatenate(recorded_blocks, axis=0)
+            print(f"Recording for {voice_seconds:.1f}s...")
+            frames = sd.rec(int(voice_seconds * voice_rate), samplerate=voice_rate, channels=1, dtype="float32")
+            sd.wait()
 
             buffer = BytesIO()
             with sf.SoundFile(buffer, mode="w", samplerate=voice_rate, channels=1, format="WAV") as wav_file:
@@ -193,8 +128,8 @@ def main() -> None:
         for chunk in app.stream(
             payload,
             config=base_config,
-            stream_mode="updates",
-            subgraphs=True,
+            stream_mode="updates",  
+            subgraphs=True,          
         ):
             # normalize (namespace, data) -> data
             update = chunk[1] if (isinstance(chunk, tuple) and len(chunk) == 2) else chunk
@@ -248,7 +183,6 @@ def main() -> None:
                         sd.wait()
                 except Exception as tts_err:
                     print(f"[tts] {tts_err}")
-
 
 if __name__ == "__main__":
     main()
