@@ -21,7 +21,7 @@ from maya.agents.config import load_agent_specs
 from maya.framework.memory import get_postgres_memory   
 from dotenv import load_dotenv
 from .prompts import TRUSTCALL_INSTRUCTION, MEMORY_UPDATE_INSTRUCTION, SUPERVISOR_SYSTEM_MESSAGE
-
+from langgraph.types import interrupt
 
 
 load_dotenv()
@@ -49,7 +49,14 @@ def _load_agents() -> Tuple[List[Any], Dict[str, str]]:
     return agents, descriptions
 
 
+class AmbiguityDetection(TypedDict):
+    """Ambiguity detection result from the model."""
+    is_ambiguous: bool
+    clarification_question: Optional[str]
 
+class UserClarification(TypedDict):
+    """User clarification response."""
+    clarification: str
 
 # Update memory tool
 class RouteState(TypedDict):
@@ -267,7 +274,8 @@ def build_supervisor():
         store: BaseStore,
     ) -> Dict[str, List[Any]]:
         """Answer medical questions with health_rag + semantic Q→A memory."""
-
+        ambiguity = False
+        clarification = None
         print("[health_rag_node] called")
 
         messages = state["messages"]
@@ -307,21 +315,6 @@ def build_supervisor():
         user_id = config["configurable"]["user_id"]
         ns = ("health_memory", user_id)
 
-        # # 1) Semantic search over previous Q→A health memories for THIS user
-        # hits = store.search(ns, query=question, limit=1)  # semantic similarity 
-
-        # if hits:
-        #     value = hits[0].value or {}
-        #     answer = value.get("answer")
-        #     if isinstance(answer, str) and answer.strip():
-        #         print("[health_rag_node] reusing from memory")
-        #         return send(
-        #             "As we discussed earlier, here is the explanation again:\n\n"
-        #             + answer
-        #         )
-        
-
-        # 2) No good hit → call health_rag agent (with profile-aware instructions)
 
         profile_docs = store.search(("profile", user_id))
         agent_messages: List[Any] = []
@@ -343,7 +336,30 @@ def build_supervisor():
                     )
                 )
             )
+        # Disambiguation step
+        disambiguation_llm = model.with_structured_output(AmbiguityDetection)
+        disambiguation_prompt = (
+            "Determine if the user's medical following question is ambiguous or unclear:\n\n"
+            f"{question}\n\n"
+            "It is ambiguous or unclear if it could have multiple interpretations, or you need more information to provide a safe and accurate answer. "
+            "For example, if the question is too broad, missing key details (e.g., specific condition, symptoms, definition, treatments), or could refer to multiple different topics or have typos.\n\n"
+            "if it is ambiguous or unclear, respond with `is_ambiguous` as true and provide a concise `clarification_question` to ask the user for more details."
 
+        )
+        # Clarification from user
+        disambiguation_result = disambiguation_llm.invoke(
+            disambiguation_prompt
+        )
+        ambiguity = bool(disambiguation_result.get("is_ambiguous"))
+        if ambiguity:
+            clarification_question = disambiguation_result.get("clarification_question") or "Could you please clarify your question?"
+            # Return the clarification prompt so it streams back through the normal TTS path.
+            clarification = interrupt(clarification_question)
+            if isinstance(clarification, list):
+                clarification = clarification[0] if clarification else ""
+
+        if ambiguity and clarification:
+            question = f"{question}\n\nUser clarification: {clarification}"
         agent_messages.append(HumanMessage(content=question))
 
         result = agent.invoke({"messages": agent_messages}, config=config)

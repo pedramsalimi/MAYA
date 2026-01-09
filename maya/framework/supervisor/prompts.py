@@ -47,6 +47,7 @@ You have access to RouteState that help you decide how to handle user messages:
   - "user_profile"
   - "general_memory"
   - "scan_portal"
+  - "ambiguity_detection"
 
 ----------------
 USER DATA

@@ -42,38 +42,12 @@ def _pool_config() -> Dict[str, int] | None:
     return cfg or None
 
 
-# def get_postgres_memory() -> Tuple[BaseStore, BaseCheckpointSaver]:
-#     """Return the shared Postgres-backed store and checkpointer."""
-#     global _STORE, _CHECKPOINTER
-
-#     if _STORE is None or _CHECKPOINTER is None:
-#         conn = _connection_string()
-#         if conn:
-#             pool = _pool_config()
-#             store_cm = (
-#                 PostgresStore.from_conn_string(conn, pool_config=pool)
-#                 if pool
-#                 else PostgresStore.from_conn_string(conn)
-#             )
-#             _STORE = _STACK.enter_context(store_cm)
-#             _CHECKPOINTER = _STACK.enter_context(PostgresSaver.from_conn_string(conn))
-#             _STORE.setup()
-#             _CHECKPOINTER.setup()
-#         else:
-#             _STORE = InMemoryStore()
-#             _CHECKPOINTER = MemorySaver()
-
-#     return _STORE, _CHECKPOINTER
 def get_postgres_memory() -> Tuple[BaseStore, BaseCheckpointSaver]:
     """Return the shared Postgres-backed store and checkpointer."""
     global _STORE, _CHECKPOINTER
 
     if _STORE is None or _CHECKPOINTER is None:
         conn = _connection_string()
-
-        # We'll use the same embedding model for semantic search in both Postgres and in-memory.
-        # text-embedding-3-small → 1536 dims (per OpenAI docs). 
-        # embeddings = init_embeddings("openai:text-embedding-3-small")
         embeddings = AzureOpenAIEmbeddings(
             model="text-embedding-3-small",
             api_version="2024-12-01-preview",
@@ -102,17 +76,13 @@ def get_postgres_memory() -> Tuple[BaseStore, BaseCheckpointSaver]:
             _CHECKPOINTER.setup()
         else:
             # In-memory fallback with the same semantic index config
-            _STORE = InMemoryStore(
-                index={
-                    "dims": 1536,
-                    "embed": embeddings,
-                }
-            )
-            _CHECKPOINTER = MemorySaver()
+            print("No Postgres connection string found, using in-memory store.")
+            # _STORE = InMemoryStore(
+            #     index={
+            #         "dims": 1536,
+            #         "embed": embeddings,
+            #     }
+            # )
+            # _CHECKPOINTER = MemorySaver()
 
     return _STORE, _CHECKPOINTER
-
-
-# def agent_namespace(agent_id: str) -> Tuple[str, ...]:
-#     """Canonical namespace for agent-scoped memory."""
-#     return ("agents", agent_id)

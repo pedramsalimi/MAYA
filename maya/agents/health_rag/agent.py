@@ -5,11 +5,12 @@ import os
 from typing import Any, Dict, Sequence
 
 from langchain.agents import create_agent
-from langchain.agents.middleware import AgentMiddleware, ModelRequest
+from langchain.agents.middleware import AgentMiddleware, ModelRequest, hook_config, HumanInTheLoopMiddleware
 from langchain.chat_models import init_chat_model
 from langchain_core.messages import HumanMessage
 from langchain_openai import AzureChatOpenAI
-
+from langchain.messages import AIMessage
+from langgraph.runtime import Runtime
 from maya.agents.tools import ToolNotAvailableError, get_tools
 from maya.framework.memory import get_postgres_memory
 from maya.agents.health_rag.state import HealthRagState
@@ -49,7 +50,15 @@ class ForcePubMedFirstTurn(AgentMiddleware[HealthRagState, Any]):
             #           f"available={[getattr(t,'name',str(t)) for t in (req.tools or [])]}")
         return req
 
+# class DisambiguationMiddleware(AgentMiddleware):
+#     def __init__(self):
+#         super().__init__()
 
+#     @hook_config(can_jump_to=["end"])
+#     def before_model(self, state: AgentState, runtime: Runtime) -> dict[str, Any] | None:
+#         # interrupt to ask for clarification if needed
+
+        
 
 # ---------------------------- Agent construction --------------------------- #
 
