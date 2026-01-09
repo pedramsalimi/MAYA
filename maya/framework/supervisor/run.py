@@ -223,7 +223,12 @@ def stream_updates(app, payload, base_config):
             continue
 
         for node, node_payload in update.items():
-            last = node_payload["messages"][-1]
+            messages = node_payload.get("messages", [])
+            if isinstance(messages, dict):
+                messages = list(messages.values())
+            if not messages:
+                continue
+            last = messages[-1]
             if hasattr(last, "get"):
                 role = last.get("role") or last.get("type")
                 name = last.get("name")
@@ -246,7 +251,7 @@ def main() -> None:
     load_dotenv()
 
     user_id = os.getenv("MAYA_RUN_USER_ID", "test")
-    thread_id = os.getenv("MAYA_RUN_THREAD_ID", "test17")
+    thread_id = os.getenv("MAYA_RUN_THREAD_ID", "test19")
     base_config = {
         "configurable": {"thread_id": thread_id, "user_id": user_id},
         "recursion_limit": 40,
