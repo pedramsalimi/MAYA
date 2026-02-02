@@ -336,6 +336,8 @@ def build_supervisor():
                     )
                 )
             )
+        
+        # add conversation history along with the question for disambiguation context
         # Disambiguation step
         disambiguation_llm = model.with_structured_output(AmbiguityDetection)
         disambiguation_prompt = (

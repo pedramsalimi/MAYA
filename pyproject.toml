@@ -25,6 +25,7 @@ dependencies = [
     "sounddevice>=0.5.3",
     "soundfile>=0.13.1",
     "trustcall>=0.0.39",
+    "vad>=1.0.2",
     "webrtcvad>=2.0.10",
 ]
 

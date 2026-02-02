@@ -3,6 +3,7 @@ from __future__ import annotations
 import os
 import sys
 import queue
+from collections import deque
 from dataclasses import dataclass
 from io import BytesIO
 from pathlib import Path
@@ -10,6 +11,7 @@ from pathlib import Path
 import numpy as np
 import sounddevice as sd
 import soundfile as sf
+import webrtcvad
 from dotenv import load_dotenv
 from openai import OpenAI, AzureOpenAI
 import azure.cognitiveservices.speech as speechsdk
@@ -32,17 +34,15 @@ load_dotenv()
 class VoiceConfig:
     seconds: float
     rate: int
-    silence_seconds: float
-    silence_threshold: float
 
 
-RUN_USER_ID = os.getenv("MAYA_RUN_USER_ID", "test")
-RUN_THREAD_ID = os.getenv("MAYA_RUN_THREAD_ID", "test21")
-RECURSION_LIMIT = int(os.getenv("MAYA_RECURSION_LIMIT", "40"))
+VAD_AGGRESSIVENESS = int(os.getenv("MAYA_VAD_AGGRESSIVENESS", "3"))
+VAD_FRAME_MS = int(os.getenv("MAYA_VAD_FRAME_MS", "10"))
+VAD_PADDING_MS = int(os.getenv("MAYA_VAD_PADDING_MS", "100"))
+VAD_SILENCE_MS = int(os.getenv("MAYA_VAD_SILENCE_MS", "200"))
+VAD_RMS_THRESHOLD = float(os.getenv("MAYA_VAD_RMS_THRESHOLD", "0.006"))
 VOICE_SECONDS = float(os.getenv("MAYA_VOICE_SECONDS", "20"))
 VOICE_RATE = int(os.getenv("MAYA_VOICE_SAMPLE_RATE", "16000"))
-VOICE_SILENCE_SECONDS = float(os.getenv("MAYA_VOICE_SILENCE_SECONDS", "1.5"))
-VOICE_SILENCE_THRESHOLD = float(os.getenv("MAYA_VOICE_SILENCE_THRESHOLD", "0.015"))
 
 
 def init_asr() -> tuple[object | None, str | None]:
@@ -126,14 +126,23 @@ def read_text(
     def capture_voice() -> str:
         print(f"Recording... speak and pause to stop (max {voice.seconds:.1f}s)")
 
+        vad = webrtcvad.Vad(VAD_AGGRESSIVENESS)
+        frame_ms = VAD_FRAME_MS
+        padding_ms = VAD_PADDING_MS
+        silence_ms = VAD_SILENCE_MS
+        rms_threshold = VAD_RMS_THRESHOLD
+
+        frame_samples = int(voice.rate * frame_ms / 1000)
+        max_frames = int(voice.seconds * voice.rate)
+        padding_frames = max(1, int(padding_ms / frame_ms))
+        silence_frames = max(1, int(silence_ms / frame_ms))
+
         audio_queue: queue.Queue[np.ndarray] = queue.Queue()
         recorded_blocks: list[np.ndarray] = []
-        silence_frames_target = int(voice.silence_seconds * voice.rate)
-        max_frames = int(voice.seconds * voice.rate)
+        ring = deque(maxlen=padding_frames)
         silence_run = 0
         total_frames = 0
-        noise_floor = voice.silence_threshold
-        max_level = 0.0
+        triggered = False
 
         def callback(indata: np.ndarray, _frames: int, _time, status) -> None:
             if status:
@@ -143,29 +152,34 @@ def read_text(
         with sd.InputStream(
             samplerate=voice.rate,
             channels=1,
-            dtype="float32",
+            dtype="int16",
+            blocksize=frame_samples,
             callback=callback,
         ):
             while True:
-                block = audio_queue.get()
-                recorded_blocks.append(block)
+                block = audio_queue.get().reshape(-1)
                 total_frames += len(block)
+                pcm = block.tobytes()
+                rms = float(np.sqrt(np.mean(block.astype(np.float32) ** 2)) / 32768.0)
+                is_speech = rms > rms_threshold and vad.is_speech(pcm, voice.rate)
 
-                block_level = float(np.sqrt(np.mean(np.square(block))))
-                max_level = max(max_level, block_level)
+                if not triggered:
+                    ring.append(block)
+                    if is_speech:
+                        triggered = True
+                        recorded_blocks.extend(ring)
+                        ring.clear()
+                    if total_frames >= max_frames:
+                        break
+                    continue
 
-                if block_level < voice.silence_threshold * 4:
-                    noise_floor = 0.9 * noise_floor + 0.1 * block_level
+                recorded_blocks.append(block)
+                if is_speech:
+                    silence_run = 0
+                else:
+                    silence_run += 1
 
-                effective_threshold = max(
-                    voice.silence_threshold,
-                    noise_floor * 3.0,
-                    max_level * 0.05,
-                )
-
-                silence_run = silence_run + len(block) if block_level < effective_threshold else 0
-
-                if silence_run >= silence_frames_target or total_frames >= max_frames:
+                if silence_run >= silence_frames or total_frames >= max_frames:
                     break
 
         if not recorded_blocks:
@@ -259,9 +273,11 @@ def stream_updates(app, payload, base_config):
 
 
 def main() -> None:
+    user_id = os.getenv("MAYA_RUN_USER_ID", "test")
+    thread_id = os.getenv("MAYA_RUN_THREAD_ID", "test21")
     base_config = {
-        "configurable": {"thread_id": RUN_THREAD_ID, "user_id": RUN_USER_ID},
-        "recursion_limit": RECURSION_LIMIT,
+        "configurable": {"thread_id": thread_id, "user_id": user_id},
+        "recursion_limit": 40,
     }
 
     app = build_supervisor()
@@ -270,8 +286,6 @@ def main() -> None:
     voice = VoiceConfig(
         seconds=VOICE_SECONDS,
         rate=VOICE_RATE,
-        silence_seconds=VOICE_SILENCE_SECONDS,
-        silence_threshold=VOICE_SILENCE_THRESHOLD,
     )
     tts = init_tts()
 
