@@ -22,10 +22,11 @@ from maya.framework.memory import get_postgres_memory
 from dotenv import load_dotenv
 from .prompts import TRUSTCALL_INSTRUCTION, MEMORY_UPDATE_INSTRUCTION, SUPERVISOR_SYSTEM_MESSAGE
 from langgraph.types import interrupt
-
+from langchain_ollama import ChatOllama
 
 load_dotenv()
 # model = ChatOpenAI(model="gpt-4o-mini", temperature=0)
+# model = ChatOllama(model="gpt-oss:20b", temperature=0)
 model = AzureChatOpenAI(azure_deployment="gpt-4o-mini", temperature=0, api_version="2024-12-01-preview", azure_endpoint="https://mayaagent.openai.azure.com/")
 # SCAN_PORTAL_URL = "https://scan.jafarapp.com"
 SCAN_PORTAL_URL = "https://plugin-rc.intelliprove.com/?action_token=eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJ1c2VyIjp7ImVtYWlsIjoiIiwiY3VzdG9tZXIiOiJTRUxGQkFDSy1ERVYiLCJncm91cCI6InVzZXIiLCJtYXhfbWVhc3VyZW1lbnRfY291bnQiOjk5OTksInVzZXJfaWQiOiJiYzc1OTY0MzBjZWE0OTEyYTdmNTI5NzczN2Q4ZmFhYSIsImF1dGgwX3VzZXJfaWQiOm51bGx9LCJtZXRhIjp7fSwiZXhwIjoxNzYzNTgzNDc3fQ.siccXuZLfbw4wdMryddlCovL0PZOya7tsKlhVIHr1hI&language=en&duration=30"
