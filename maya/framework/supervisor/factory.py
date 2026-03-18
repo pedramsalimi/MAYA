@@ -1,7 +1,10 @@
 import uuid
 import json
+import hashlib
+import re
 import webbrowser
 from datetime import datetime
+from pathlib import Path
 from trustcall import create_extractor
 from typing import Optional, Literal, List, Dict, Any, Tuple, TypedDict
 from pydantic import BaseModel, Field
@@ -20,14 +23,20 @@ from langchain_openai import AzureChatOpenAI
 from maya.agents.config import load_agent_specs
 from maya.framework.memory import get_postgres_memory   
 from dotenv import load_dotenv
-from .prompts import TRUSTCALL_INSTRUCTION, MEMORY_UPDATE_INSTRUCTION, SUPERVISOR_SYSTEM_MESSAGE
+from .prompts import (
+    TRUSTCALL_INSTRUCTION,
+    MEMORY_UPDATE_INSTRUCTION,
+    SUPERVISOR_SYSTEM_MESSAGE,
+    build_health_route_guard_prompt,
+    system,
+)
 from langgraph.types import interrupt
 from langchain_ollama import ChatOllama
 
 load_dotenv()
-# model = ChatOpenAI(model="gpt-4o-mini", temperature=0)
-# model = ChatOllama(model="gpt-oss:20b", temperature=0)
+
 model = AzureChatOpenAI(azure_deployment="gpt-4o-mini", temperature=0, api_version="2024-12-01-preview", azure_endpoint="https://mayaagent.openai.azure.com/")
+
 # SCAN_PORTAL_URL = "https://scan.jafarapp.com"
 SCAN_PORTAL_URL = "https://plugin-rc.intelliprove.com/?action_token=eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJ1c2VyIjp7ImVtYWlsIjoiIiwiY3VzdG9tZXIiOiJTRUxGQkFDSy1ERVYiLCJncm91cCI6InVzZXIiLCJtYXhfbWVhc3VyZW1lbnRfY291bnQiOjk5OTksInVzZXJfaWQiOiJiYzc1OTY0MzBjZWE0OTEyYTdmNTI5NzczN2Q4ZmFhYSIsImF1dGgwX3VzZXJfaWQiOm51bGx9LCJtZXRhIjp7fSwiZXhwIjoxNzYzNTgzNDc3fQ.siccXuZLfbw4wdMryddlCovL0PZOya7tsKlhVIHr1hI&language=en&duration=30"
 
@@ -65,6 +74,22 @@ class RouteState(TypedDict):
 
     route_type: Literal['user_profile', 'general_memory', 'health_rag', 'scan_portal']
 
+
+class SupervisorRouteDecision(BaseModel):
+    """Validated supervisor route decision for the current turn."""
+
+    route_type: Literal["direct_answer", "user_profile", "general_memory", "health_rag", "scan_portal"] = Field(
+        description="Choose exactly one route. Use direct_answer only for non-health turns that do not require profile or memory storage."
+    )
+
+
+class HealthRouteGuardDecision(BaseModel):
+    """Validation pass to prevent health questions from falling through to direct answers."""
+
+    route_type: Literal["direct_answer", "health_rag"] = Field(
+        description="Choose health_rag for any health-related message, otherwise direct_answer."
+    )
+
 class Memory(BaseModel):
     content: str = Field(description="The main content of the memory. For example: User expressed interest in learning about French.")
 
@@ -101,6 +126,12 @@ profile_extractor = create_extractor(
 
 
 def build_supervisor():
+    def _latest_user_message(messages: list[Any]) -> HumanMessage | None:
+        for message in reversed(messages):
+            if isinstance(message, HumanMessage):
+                return message
+        return None
+
     def supervisor(state: MessagesState, config: RunnableConfig, store: BaseStore):
 
         """Load memories from the store and use them to personalize the chatbot's response."""
@@ -108,7 +139,10 @@ def build_supervisor():
         # Get the user ID from the config
         last_message = state["messages"][-1] if state["messages"] else None
         if isinstance(last_message, ToolMessage) and (last_message.additional_kwargs or {}).get("source") == "health_rag":
-            return {"messages": [AIMessage(content=last_message.content)]}
+            extra = last_message.additional_kwargs or {}
+            workflow_trace = extra.get("workflow_trace")
+            kwargs = {"workflow_trace": workflow_trace} if isinstance(workflow_trace, list) else {}
+            return {"messages": [AIMessage(content=last_message.content, additional_kwargs=kwargs)]}
 
         user_id = config["configurable"]["user_id"]
 
@@ -130,9 +164,51 @@ def build_supervisor():
 
         system_msg = SUPERVISOR_SYSTEM_MESSAGE.format(user_profile=user_profile, general_memory=general_memory, time=datetime.now().isoformat())
 
-        # Respond using memory as well as the chat history
-        response = model.bind_tools([RouteState], parallel_tool_calls=False).invoke([SystemMessage(content=system_msg)]+state["messages"])
+        latest_user = _latest_user_message(state["messages"])
+        routing_messages = [SystemMessage(content=system_msg)]
+        if latest_user is not None:
+            routing_messages.append(latest_user)
 
+        decision = model.with_structured_output(SupervisorRouteDecision, strict=True).invoke(
+            routing_messages
+        )
+
+        if isinstance(decision, SupervisorRouteDecision) and decision.route_type == "direct_answer" and latest_user is not None:
+            health_guard = model.with_structured_output(HealthRouteGuardDecision, strict=True).invoke(
+                [
+                    SystemMessage(content=build_health_route_guard_prompt()),
+                    latest_user,
+                ]
+            )
+            if isinstance(health_guard, HealthRouteGuardDecision) and health_guard.route_type == "health_rag":
+                decision = SupervisorRouteDecision(route_type="health_rag")
+
+        if isinstance(decision, SupervisorRouteDecision) and decision.route_type != "direct_answer":
+            response = AIMessage(
+                content="",
+                tool_calls=[
+                    {
+                        "id": f"call_{uuid.uuid4().hex[:12]}",
+                        "name": "RouteState",
+                        "args": {"route_type": decision.route_type},
+                        "type": "tool_call",
+                    }
+                ],
+            )
+            return {"messages": [response]}
+
+        answer_messages = [
+            SystemMessage(
+                content=system(agent_descriptions=agent_descriptions).format(
+                    memory=general_memory,
+                    profile=user_profile,
+                    personal_instructions="",
+                )
+            )
+        ]
+        if latest_user is not None:
+            answer_messages.append(latest_user)
+        response = model.invoke(answer_messages)
         return {"messages": [response]}
 
     def update_memory(state: MessagesState, config: RunnableConfig, store: BaseStore):
@@ -274,14 +350,8 @@ def build_supervisor():
         config: RunnableConfig,
         store: BaseStore,
     ) -> Dict[str, List[Any]]:
-        """Answer medical questions with health_rag + semantic Q→A memory."""
-        ambiguity = False
-        clarification = None
-        print("[health_rag_node] called")
-
+        """Answer medical questions from the local literature corpus."""
         messages = state["messages"]
-        agent = agent_by_name.get("health_rag")
-
         last = messages[-1] if messages else None
         tool_call_id = (
             last.tool_calls[0]["id"]
@@ -289,116 +359,131 @@ def build_supervisor():
             else None
         )
 
-        def send(text: str) -> Dict[str, List[Any]]:
+        def send(text: str, trace: dict[str, Any] | None = None) -> Dict[str, List[Any]]:
             text = (text or "").strip() or "Health specialist completed without response."
             if tool_call_id:
+                extra = {"source": "health_rag"}
+                if trace:
+                    extra["workflow_trace"] = [trace]
                 return {
                     "messages": [
                         ToolMessage(
                             content=text,
                             tool_call_id=tool_call_id,
                             name="RouteState",
-                            additional_kwargs={"source": "health_rag"},
+                            additional_kwargs=extra,
                         )
                     ]
                 }
             return {"messages": [AIMessage(content=text)]}
-
-        if agent is None:
-            return send("Health specialist not available right now.")
 
         # Latest user question
         human_messages = [m for m in messages if isinstance(m, HumanMessage)]
         question = human_messages[-1].content.strip() if human_messages else ""
         if not question:
             question = "Please answer the user's latest health question."
+        agent = agent_by_name.get("health_rag")
+        if agent is None:
+            return send("Health specialist not available right now.")
 
-        user_id = config["configurable"]["user_id"]
-        ns = ("health_memory", user_id)
-
-
-        profile_docs = store.search(("profile", user_id))
-        agent_messages: List[Any] = []
-
-        if profile_docs:
-            profile = profile_docs[0].value
-            agent_messages.append(
-                SystemMessage(
-                    content=(
-                        "User background/profile (adapt explanation depth and tone):\n"
-                        f"{json.dumps(profile, ensure_ascii=False)}\n\n"
-                        "- If the user is NOT from a medical/scientific background, use simple language, "
-                        "short sentences, and concrete examples.\n"
-                        "- If the user DOES have a medical/scientific background, add a short "
-                        "'Technical details' section.\n"
-                        "- In ALL cases, base claims strictly on PubMed evidence from the "
-                        "`pubmed_health_rag` tool and ALWAYS include inline numeric citations "
-                        "[1], [2] and a References section using ONLY the tool-provided citations.\n"
-                    )
-                )
-            )
-        
-        # add conversation history along with the question for disambiguation context
-        # Disambiguation step
-        disambiguation_llm = model.with_structured_output(AmbiguityDetection)
-        disambiguation_prompt = (
-            "Determine if the user's medical following question is ambiguous or unclear:\n\n"
-            f"{question}\n\n"
-            "It is ambiguous or unclear if it could have multiple interpretations, or you need more information to provide a safe and accurate answer. "
-            "For example, if the question is too broad, missing key details (e.g., specific condition, symptoms, definition, treatments), or could refer to multiple different topics or have typos.\n\n"
-            "if it is ambiguous or unclear, respond with `is_ambiguous` as true and provide a concise `clarification_question` to ask the user for more details."
-
-        )
-        # Clarification from user
-        disambiguation_result = disambiguation_llm.invoke(
-            disambiguation_prompt
-        )
-        ambiguity = bool(disambiguation_result.get("is_ambiguous"))
-        if ambiguity:
-            clarification_question = disambiguation_result.get("clarification_question") or "Could you please clarify your question?"
-            # Return the clarification prompt so it streams back through the normal TTS path.
-            clarification = interrupt(clarification_question)
+        decision = agent.assess_clarification(question, model=model)
+        prompt = decision.clarification_question.strip()
+        if decision.needs_clarification and prompt:
+            clarification = interrupt(prompt)
             if isinstance(clarification, list):
                 clarification = clarification[0] if clarification else ""
+            clarification_text = str(clarification or "").strip()
+            if not clarification_text:
+                return send(prompt)
+            question = f"Original question: {question}\nUser clarification: {clarification_text}"
 
-        if ambiguity and clarification:
-            question = f"{question}\n\nUser clarification: {clarification}"
-        agent_messages.append(HumanMessage(content=question))
+        user_id = config["configurable"]["user_id"]
+        namespace = ("health_rag", user_id, "qa_history")
+        normalized_query = " ".join(re.sub(r"[^a-z0-9]+", " ", question.lower()).split())
+        summary_key = f"summary:{hashlib.sha256(normalized_query.encode('utf-8')).hexdigest()[:16]}"
 
-        result = agent.invoke({"messages": agent_messages}, config=config)
+        exact_item = store.get(namespace, summary_key)
+        if exact_item is not None:
+            value = getattr(exact_item, "value", {})
+            if isinstance(value, dict) and value.get("summary"):
+                return send(
+                    f"We discussed something similar before. {value['summary']}",
+                    {
+                        "stage": "health_rag",
+                        "tool_name": "health_rag_tool",
+                        "memory_hit": True,
+                        "memory_lookup": "exact",
+                        "memory_namespace": list(getattr(exact_item, "namespace", namespace)),
+                        "memory_key": getattr(exact_item, "key", summary_key),
+                        "retrieval_used": False,
+                        "summary_stored": False,
+                        "query": question,
+                        "citations": value.get("citations", [])[:2],
+                    },
+                )
 
-        if isinstance(result, dict) and isinstance(result.get("messages"), list) and result["messages"]:
-            answer = result["messages"][-1].content
-        else:
-            answer = getattr(result, "content", str(result))
+        semantic_items = store.search(namespace, query=question, filter={"type": "health_rag_summary"}, limit=1)
+        if semantic_items:
+            semantic_item = semantic_items[0]
+            semantic_value = getattr(semantic_item, "value", {})
+            semantic_score = float(getattr(semantic_item, "score", 0.0) or 0.0)
+            if isinstance(semantic_value, dict) and semantic_value.get("summary") and semantic_score >= 0.82:
+                return send(
+                    f"We discussed something similar before. {semantic_value['summary']}",
+                    {
+                        "stage": "health_rag",
+                        "tool_name": "health_rag_tool",
+                        "memory_hit": True,
+                        "memory_lookup": "semantic",
+                        "memory_namespace": list(getattr(semantic_item, "namespace", namespace)),
+                        "memory_key": getattr(semantic_item, "key", ""),
+                        "retrieval_used": False,
+                        "summary_stored": False,
+                        "query": question,
+                        "citations": semantic_value.get("citations", [])[:2],
+                    },
+                )
 
-        answer = (answer or "").strip() or "Health specialist completed without response."
-        print(f"[health_rag_node answer]: {answer}")
-
-        summary_prompt = (
-        "Summarise the following medical explanation into maximum two sentences"
-        "in clear, empathetic language suitable for user background below:"
-        f"{json.dumps(profile, ensure_ascii=False)}. "
-        "Do not include citations, references, or markdown:\n\n"
-        f"{answer}"
-    )
-
-        summary = model.invoke(summary_prompt).content.strip()
-        if not summary:
-            summary = answer
-        # 3) Store new Q→A with "question" field indexed for future semantic search
-        store.put(
-            ns,
-            key=str(uuid.uuid4()),
-            value={
-                "question": question,
-                "answer": answer,
-                "created_at": datetime.utcnow().isoformat(),
-            },
-            index=["question"],  # tell the store which field to embed for this doc 
+        result = agent.agent.invoke(
+            {"messages": [HumanMessage(content=question)]},
+            config={"recursion_limit": 10},
         )
-        
-        return send(summary)
+        answer_message = result["messages"][-1] if isinstance(result, dict) else None
+        answer_text = getattr(answer_message, "content", "") if answer_message is not None else ""
+        citations = result.get("citations", [])[:2] if isinstance(result, dict) else []
+
+        summary_text = str(answer_text or "").strip() or "I could not find a relevant answer for that question in the current local literature set."
+        summary_stored = False
+        if citations and answer_text:
+            store.put(
+                namespace,
+                summary_key,
+                {
+                    "query": question,
+                    "normalized_query": normalized_query,
+                    "summary": summary_text,
+                    "citations": citations,
+                    "type": "health_rag_summary",
+                },
+                index=["query", "normalized_query", "summary"],
+            )
+            summary_stored = True
+
+        return send(
+            summary_text,
+            {
+                "stage": "health_rag",
+                "tool_name": "health_rag_tool",
+                "memory_hit": False,
+                "memory_lookup": "miss",
+                "memory_namespace": list(namespace),
+                "memory_key": summary_key,
+                "retrieval_used": True,
+                "summary_stored": summary_stored,
+                "query": question,
+                "citations": citations,
+            },
+        )
 
     def route_message(state: MessagesState, config: RunnableConfig, store: BaseStore) -> Literal[END, "update_profile", "update_memory", "health_rag", "scan_portal"]:
 
@@ -430,7 +515,7 @@ def build_supervisor():
 
 
     store, checkpointer = get_postgres_memory()
-    agents, _ = _load_agents()
+    agents, agent_descriptions = _load_agents()
     agent_by_name = {a.name: a for a in agents}
     # Create the graph + all nodes
     builder = StateGraph(MessagesState)

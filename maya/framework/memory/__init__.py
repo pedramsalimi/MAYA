@@ -4,17 +4,15 @@ from __future__ import annotations
 
 import atexit
 import os
+import re
 from contextlib import ExitStack
 from typing import Dict, Tuple
-from langchain.embeddings import init_embeddings  # NEW
-from langchain_openai import AzureOpenAIEmbeddings
-from langgraph.store.base import BaseStore
-from langgraph.store.postgres import PostgresStore
-from langgraph.store.memory import InMemoryStore
+
+from langchain_core.embeddings import Embeddings
 from langgraph.checkpoint.base import BaseCheckpointSaver
 from langgraph.checkpoint.postgres import PostgresSaver
-from langgraph.checkpoint.memory import MemorySaver
-from openai import embeddings
+from langgraph.store.base import BaseStore
+from langgraph.store.postgres import PostgresStore
 
 _ENV_DB_URI = "MAYA_DB_URI"
 _ENV_DB_URI_FALLBACK = "DATABASE_URL"
@@ -26,6 +24,26 @@ atexit.register(_STACK.close)
 
 _STORE: BaseStore | None = None
 _CHECKPOINTER: BaseCheckpointSaver | None = None
+
+
+class DeterministicMemoryEmbeddings(Embeddings):
+    """Local, deterministic embeddings for semantic memory search."""
+
+    def __init__(self, size: int = 1536):
+        self.size = size
+
+    def _embed(self, text: str) -> list[float]:
+        values = [0.0] * self.size
+        for token in re.findall(r"[a-z0-9]+", text.lower()):
+            values[hash(token) % self.size] += 1.0
+        norm = sum(value * value for value in values) ** 0.5 or 1.0
+        return [value / norm for value in values]
+
+    def embed_documents(self, texts: list[str]) -> list[list[float]]:
+        return [self._embed(text) for text in texts]
+
+    def embed_query(self, text: str) -> list[float]:
+        return self._embed(text)
 
 
 def _connection_string() -> str:
@@ -48,19 +66,12 @@ def get_postgres_memory() -> Tuple[BaseStore, BaseCheckpointSaver]:
 
     if _STORE is None or _CHECKPOINTER is None:
         conn = _connection_string()
-        embeddings = AzureOpenAIEmbeddings(
-            model="text-embedding-3-small",
-            api_version="2024-12-01-preview",
-            azure_endpoint="https://mayaagent.openai.azure.com/"
-        )
+        embeddings = DeterministicMemoryEmbeddings(size=1536)
         if conn:
             pool = _pool_config()
-
             index_config = {
                 "dims": 1536,
                 "embed": embeddings,
-                # We will embed the "question" field of values we store (e.g. health_memory Q→A).
-                # If you omit "fields", it embeds the whole JSON value.
                 "fields": ["question"],
             }
 
@@ -75,14 +86,6 @@ def get_postgres_memory() -> Tuple[BaseStore, BaseCheckpointSaver]:
             _STORE.setup()
             _CHECKPOINTER.setup()
         else:
-            # In-memory fallback with the same semantic index config
-            print("No Postgres connection string found, using in-memory store.")
-            # _STORE = InMemoryStore(
-            #     index={
-            #         "dims": 1536,
-            #         "embed": embeddings,
-            #     }
-            # )
-            # _CHECKPOINTER = MemorySaver()
+            raise RuntimeError("MAYA_DB_URI or DATABASE_URL must be set for memory persistence.")
 
     return _STORE, _CHECKPOINTER

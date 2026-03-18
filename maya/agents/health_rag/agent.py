@@ -1,176 +1,158 @@
+"""Local-literature health RAG agent for the legacy MAYA supervisor."""
+
 from __future__ import annotations
 
-import json
-import os
-from typing import Any, Dict, Sequence
+import re
+from dataclasses import dataclass
+from pathlib import Path
+from typing import Any
 
 from langchain.agents import create_agent
-from langchain.agents.middleware import AgentMiddleware, ModelRequest, hook_config, HumanInTheLoopMiddleware
-from langchain.chat_models import init_chat_model
+from langchain.agents.middleware import AgentMiddleware, ModelRequest, dynamic_prompt
 from langchain_core.messages import HumanMessage
+from langchain_core.prompts import ChatPromptTemplate
 from langchain_openai import AzureChatOpenAI
-from langchain.messages import AIMessage
-from langgraph.runtime import Runtime
-from maya.agents.tools import ToolNotAvailableError, get_tools
-from maya.framework.memory import get_postgres_memory
+from pydantic import BaseModel, Field
+
 from maya.agents.health_rag.state import HealthRagState
-from dotenv import load_dotenv
-from langchain_ollama import ChatOllama
-load_dotenv()
+from maya.framework.ontologies import load_ontology, render_ontology_block
+from maya.framework.rag.corpus import chunk_snapshot_path, corpus_root, load_chunk_snapshot, load_corpus_documents, split_documents
+from maya.framework.rag.vectorstore import build_embeddings, build_vector_store, load_rag_vector_config
+
 
 AGENT_ID = "health_rag"
-DEFAULT_MODEL = "gpt-4o-mini"
-DEFAULT_TOOLS: Sequence[str] = ("pubmed_health_rag",)
-PUBMED_TOOL_NAME = "pubmed_health_rag" 
-DEBUG = os.getenv("MAYA_DEBUG") == "1"
 
 
-# ------------------------------ Middleware -------------------------------- #
-PUBMED_TOOL_NAME = "pubmed_health_rag"
-
-class ForcePubMedFirstTurn(AgentMiddleware[HealthRagState, Any]):
-    def _saw_pubmed(self, state: HealthRagState) -> bool:
-        msgs = state.get("messages") or []
-        for m in msgs:
-            role = m.get("role") if isinstance(m, dict) else getattr(m, "type", None)
-            name = m.get("name") if isinstance(m, dict) else getattr(m, "name", None)
-            if role in {"tool", "ToolMessage"} and name == PUBMED_TOOL_NAME:
-                return True
-        return False
-
-    def modify_model_request(self, state: HealthRagState, req: ModelRequest) -> ModelRequest:
-        # On the FIRST model turn (no PubMed observation yet):
-        if not self._saw_pubmed(state):
-            # 1) hide the return tool so it's not selectable
-            req.tools = [t for t in (req.tools or []) if getattr(t, "name", "") != "transfer_back_to_supervisor"]
-            # 2) force PubMed specifically (note the dict shape)
-            req.tool_choice = {"type": "tool", "name": PUBMED_TOOL_NAME}
-            # if DEBUG:
-            #     print(f"[{AGENT_ID}:mw] forcing first tool → {PUBMED_TOOL_NAME}; "
-            #           f"available={[getattr(t,'name',str(t)) for t in (req.tools or [])]}")
-        return req
-
-# class DisambiguationMiddleware(AgentMiddleware):
-#     def __init__(self):
-#         super().__init__()
-
-#     @hook_config(can_jump_to=["end"])
-#     def before_model(self, state: AgentState, runtime: Runtime) -> dict[str, Any] | None:
-#         # interrupt to ask for clarification if needed
-
-        
-
-# ---------------------------- Agent construction --------------------------- #
-
-def build(spec: Dict[str, Any] | None = None):
-    """Compile the health RAG agent for supervisor use."""
-    spec = spec or {}
-
-    prompt = _require_prompt(spec)
-    model_name = spec.get("model") or DEFAULT_MODEL
-    tool_ids = _normalize_tools(spec.get("tools") or DEFAULT_TOOLS)
-
-    try:
-        tools = get_tools(tool_ids)
-    except ToolNotAvailableError as exc:
-        raise RuntimeError(f"Failed to load tools for '{AGENT_ID}': {exc}") from exc
-
-    # Bind with tools; `tool_choice="any"` ensures the model MUST choose a tool.
-    # llm = init_chat_model(model_name, temperature=0)
-    # llm = llm.bind_tools(tools)
-    # llm = AzureChatOpenAI(azure_deployment="gpt-4o-mini", temperature=0, api_version="2024-12-01-preview", azure_endpoint="https://mayaagent.openai.azure.com/")
-    # llm = ChatOllama(model="gpt-oss:20b", temperature=0)
-    # llm = ChatOllama(model="qwen3:8b", temperature=0)
-    llm = ChatOllama(model="granite4:3b", temperature=0)
+class DisambiguationDecision(BaseModel):
+    needs_clarification: bool = Field(description="Whether the question is too underspecified to answer safely.")
+    ambiguity_reason: str = Field(default="", description="Short reason for the decision.")
+    clarification_question: str = Field(default="", description="A single focused clarification question when clarification is required.")
 
 
-    llm = llm.bind_tools(tools)
-    # if DEBUG:
-    #     print(f"[{AGENT_ID}] tools bound: {[getattr(t, 'name', str(t)) for t in tools]}")
+class RetrieveLocalLiterature(AgentMiddleware[HealthRagState, Any]):
+    state_schema = HealthRagState
 
-    store, checkpointer = get_postgres_memory()
-    middlewares = [ForcePubMedFirstTurn()]
-    # if DEBUG:
-    #     class _Debug(AgentMiddleware[HealthRagState, Any]):
-    #         state_schema = HealthRagState
-    #         def before_model(self, state: HealthRagState, runtime):
-    #             print(f"[DEBUG:{AGENT_ID}] before_model: {len(state.get('messages', []))} msgs")
-    #             return None
-    #     middlewares.append(_Debug())
+    def __init__(self, retriever: Any):
+        self.retriever = retriever
 
+    def before_model(self, state: HealthRagState, runtime: Any) -> dict[str, Any] | None:
+        question = ""
+        for message in reversed(state.get("messages", [])):
+            if isinstance(message, HumanMessage):
+                question = message.content.strip()
+                break
+        if not question:
+            return {"citations": []}
+
+        documents = self.retriever.invoke(question)
+        citations: list[dict[str, Any]] = []
+        for document in documents[:3]:
+            excerpt = re.sub(r"\s+", " ", document.page_content).strip()
+            if len(excerpt) > 500:
+                excerpt = excerpt[:497].rsplit(" ", 1)[0] + "..."
+            citations.append(
+                {
+                    "title": document.metadata.get("title", ""),
+                    "source_path": document.metadata.get("source_path", ""),
+                    "page_number": document.metadata.get("page_number", 0),
+                    "excerpt": excerpt,
+                }
+            )
+        return {"citations": citations}
+
+
+@dynamic_prompt
+def health_rag_prompt(request: ModelRequest) -> str:
+    citations = request.state.get("citations") or []
+    if not citations:
+        return (
+            "You are MAYA's health literature assistant. "
+            "If the retrieved local literature does not contain a relevant answer, say that clearly and briefly."
+        )
+
+    context = "\n\n".join(
+        f"{item.get('title', 'Local literature')} (page {int(item.get('page_number', 0)) + 1})\n{item.get('excerpt', '')}"
+        for item in citations
+    )
+    return (
+        "You are MAYA's health literature assistant. "
+        "Answer only from the retrieved local literature below. "
+        "Write 2 to 4 short plain-English sentences. "
+        "Do not invent facts. If the retrieved context is insufficient, say so briefly.\n\n"
+        f"Retrieved local literature:\n{context}"
+    )
+
+
+@dataclass(frozen=True)
+class HealthRagHandle:
+    name: str
+    agent: Any
+    ontology_block: str
+
+    def assess_clarification(self, question: str, *, model: Any) -> DisambiguationDecision:
+        if not question.strip() or model is None:
+            return DisambiguationDecision(needs_clarification=False)
+
+        prompt = ChatPromptTemplate.from_messages(
+            [
+                (
+                    "system",
+                    "You decide whether a health question needs clarification before MAYA answers from local literature.\n"
+                    "Use the ontology below as the policy source for deciding whether the question is underspecified.\n"
+                    "Return a DisambiguationDecision.\n"
+                    "Set needs_clarification to true only when MAYA lacks enough information for a safe, grounded answer from local literature.\n"
+                    "If needs_clarification is true, provide one focused clarification_question.\n"
+                    "If needs_clarification is false, leave clarification_question empty.\n\n"
+                    "{ontology}",
+                ),
+                ("human", "User question: {question}"),
+            ]
+        )
+        try:
+            chain = prompt | model.with_structured_output(DisambiguationDecision, strict=True)
+            decision = chain.invoke({"question": question, "ontology": self.ontology_block})
+            if isinstance(decision, DisambiguationDecision):
+                return decision
+        except Exception:
+            pass
+        return DisambiguationDecision(needs_clarification=False)
+
+
+def build(spec: dict[str, Any] | None = None) -> HealthRagHandle:
+    root_dir = Path(__file__).resolve().parents[2]
+    vector_config = load_rag_vector_config()
+    documents = load_chunk_snapshot(chunk_snapshot_path(root_dir))
+    if not documents and vector_config.backend != "pgvector":
+        source_documents = load_corpus_documents(root_dir)
+        documents = split_documents(source_documents) if source_documents else []
+    if not documents and vector_config.backend != "pgvector":
+        raise RuntimeError(f"No local health literature found under {corpus_root(root_dir)}.")
+
+    embeddings = build_embeddings(vector_config)
+    vector_store = build_vector_store(vector_config, embeddings, pre_delete=False)
+    if vector_config.backend == "in_memory" and documents:
+        vector_store.add_documents(documents)
+
+    retriever = vector_store.as_retriever(
+        search_type="similarity_score_threshold" if vector_config.backend == "pgvector" else "similarity",
+        search_kwargs={"k": 4, "score_threshold": 0.28} if vector_config.backend == "pgvector" else {"k": 4},
+    )
+    llm = AzureChatOpenAI(
+        azure_deployment="gpt-4o-mini",
+        temperature=0,
+        api_version="2024-12-01-preview",
+        azure_endpoint="https://mayaagent.openai.azure.com/",
+    )
     agent = create_agent(
         llm,
-        tools=tools,
-        system_prompt=prompt,
+        tools=[],
+        middleware=[RetrieveLocalLiterature(retriever), health_rag_prompt],
+        state_schema=HealthRagState,
         name=AGENT_ID,
-        state_schema=HealthRagState,   
-        middleware=middlewares,
-        checkpointer=checkpointer,
-        store=store,
     )
-    return agent
-
-
-# --------------------------------- Helpers -------------------------------- #
-
-def _require_prompt(spec: Dict[str, Any]) -> str:
-    prompt = spec.get("prompt")
-    if not isinstance(prompt, str) or not prompt.strip():
-        raise ValueError(f"`prompt` missing or empty for agent '{AGENT_ID}'.")
-    return prompt.strip()
-
-def _normalize_tools(raw: Sequence[str] | str) -> Sequence[str]:
-    if isinstance(raw, str):
-        return (raw,)
-    return tuple(str(tool_id) for tool_id in raw)
-
-
-# -------------------------- smoke test -------------------------- #
-
-def _demo_prompt() -> str:
-    return (
-        "You are MAYA's health research specialist. Your job is to answer clinical information questions by grounding your response in current evidence from PubMed via your tool.\n\nSUBAGENT CONTRACT (do not reveal):\n- Evidence-first: On a fresh clinical question, you MUST call `pubmed_health_rag` before finalizing any answer (unless the necessary citations already exist in state and are clearly relevant to the current question).\n- Use tool output as primary evidence. Do not dump raw JSON. Extract key findings and synthesize clearly.\n- Output format:\n  1) A direct, plain-language answer that highlights mechanism, benefits/risks, key contraindications, and major uncertainties.\n  2) Inline numeric citations like [1], [2] at claim-level where appropriate.\n  3) A short 'References' section with title – journal – year – PMID/URL for each citation used.\n  4) A brief safety disclaimer (no diagnosis/prescription; advise consulting a clinician).\n- Turn-taking: Do NOT call `transfer_back_to_supervisor` until you have (a) run at least one `pubmed_health_rag` call for the current question and (b) produced the final user-facing answer as above. Only then return control.\n- Escalation: If you detect emergency/safety-critical content (e.g., chest pain, overdose), produce a brief safety message and then return control.\n- Scope guardrails: If the user asks for non-medical matters, return control without answering.\n\nStyle: Be precise, neutral, and concise. Avoid speculation; if evidence is weak or mixed, say so explicitly. Prefer recent, high-quality sources. Avoid directives about dosing or therapy initiation.\n"
+    ontology_path = root_dir / "framework" / "ontologies" / "disambiguation_ontology.json"
+    return HealthRagHandle(
+        name=AGENT_ID,
+        agent=agent,
+        ontology_block=render_ontology_block(load_ontology(ontology_path), limit=5),
     )
-
-# update the demo below to test 5 times with different questions and print the time taken for each
-
-def run_demo(question: str = "What does bisoprolol do in the body?") -> str:
-    spec = {
-        "prompt": _demo_prompt(),
-        "model": os.getenv("MAYA_DEMO_MODEL", DEFAULT_MODEL),
-        "tools": DEFAULT_TOOLS,
-    }
-    agent = build(spec)
-    result = agent.invoke(
-        {"messages": [HumanMessage(content=question)]},
-        config={"configurable": {"thread_id": "health_rag_demo"}, "recursion_limit": 30},
-    )
-    last_message = result["messages"][-1]
-    if hasattr(last_message, "content"):
-        return last_message.content
-    if isinstance(last_message, dict):
-        return json.dumps(last_message)
-    return str(last_message)
-
-
-if __name__ == "__main__":
-
-    import time
-
-    print("--- Health RAG demo ---")
-    list_of_questions = [
-        "What does bisoprolol do in the body?",
-        "How effective is metformin for type 2 diabetes?",
-        "What are the side effects of atorvastatin?",
-        "Can omega-3 supplements reduce heart disease risk?",
-        "What is the latest research on Alzheimer's treatments?"
-    ]
-    demo_times = []
-    for question in list_of_questions:
-        start_time = time.time()
-        print(run_demo(question))
-        end_time = time.time()
-        print(f"--- Demo for '{question}' completed in {end_time - start_time:.2f} seconds ---")
-        demo_times.append(end_time - start_time)
-    average_time = sum(demo_times) / len(demo_times)
-    print(f"--- Average demo time for 5 questions: {average_time:.2f} seconds ---")

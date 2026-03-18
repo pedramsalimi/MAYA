@@ -1,0 +1,114 @@
+{
+  "ontology_name": "disambiguation",
+  "version": "0.2.1",
+  "scope": "Literature-grounded dialogue guidance for clarification and scope disambiguation in health conversations.",
+  "source_basis": [
+    {
+      "source_id": "bickmore_2011_health_counseling_ontology",
+      "citation": "Bickmore TW, Schulman D, Sidner C. A reusable framework for health counseling dialogue systems based on a behavioral medicine ontology. J Biomed Inform. 2011;44(2):183-197.",
+      "url": "https://pubmed.ncbi.nlm.nih.gov/21220044/"
+    },
+    {
+      "source_id": "amith_2019_phido",
+      "citation": "Amith M, et al. Conceiving an application ontology to model patient human papillomavirus vaccine counseling for dialogue management. J Biomed Inform. 2019;100:103312.",
+      "url": "https://pubmed.ncbi.nlm.nih.gov/31865902/"
+    },
+    {
+      "source_id": "gilligan_2017_asco_communication",
+      "citation": "Gilligan T, et al. Patient-Clinician Communication: American Society of Clinical Oncology Consensus Guideline. J Clin Oncol. 2017;35(31):3618-3632.",
+      "url": "https://pubmed.ncbi.nlm.nih.gov/28892432/"
+    },
+    {
+      "source_id": "dorfman_2022_symptom_communication",
+      "citation": "Dorfman CS, et al. Symptom Communication Preferences and Communication Barriers for Young Adult Cancer Survivors and Their Health Care Providers. J Adolesc Young Adult Oncol. 2022;11(5):506-517.",
+      "url": "https://pubmed.ncbi.nlm.nih.gov/35049386/"
+    },
+    {
+      "source_id": "mclaughlin_2019_adolescent_symptom_communication",
+      "citation": "McLaughlin CA, et al. Factors Affecting Adolescents' Willingness to Communicate Symptoms During Cancer Treatment: A Systematic Review from the Children's Oncology Group. J Adolesc Young Adult Oncol. 2019;8(2):105-113.",
+      "url": "https://pubmed.ncbi.nlm.nih.gov/30489196/"
+    },
+    {
+      "source_id": "maas_2026_information_needs",
+      "citation": "Maas A, et al. Information needs of adult childhood, adolescent, and young adult cancer survivors (CAYACS): A systematic review. Patient Educ Couns. 2026.",
+      "url": "https://pubmed.ncbi.nlm.nih.gov/41655359/"
+    }
+  ],
+  "entities": [
+    {
+      "concept_id": "disambiguation.scope_and_agenda",
+      "label": "Scope and Agenda Elicitation",
+      "provenance_type": "literature_grounded",
+      "source_refs": [
+        "bickmore_2011_health_counseling_ontology",
+        "amith_2019_phido",
+        "gilligan_2017_asco_communication"
+      ],
+      "evidence_summary": "Health dialogue systems and oncology communication guidance treat agenda-setting and information gathering as explicit dialogue tasks before counseling or education is delivered.",
+      "prompt_rules": [
+        "Clarify the user's goal before answering when the turn does not make the intended task clear enough for safe counseling.",
+        "Use a brief agenda-setting clarification when a clinical concept is named but the user has not yet said whether they want a general explanation, help with their own symptoms, or help interpreting a result."
+      ]
+    },
+    {
+      "concept_id": "disambiguation.missing_clinical_referent",
+      "label": "Missing Clinical Referent",
+      "provenance_type": "literature_grounded",
+      "source_refs": [
+        "dorfman_2022_symptom_communication",
+        "mclaughlin_2019_adolescent_symptom_communication",
+        "gilligan_2017_asco_communication"
+      ],
+      "evidence_summary": "Young adult and adolescent oncology communication studies emphasize direct, specific, and probing questions when symptoms or concerns are not yet concrete enough to interpret safely.",
+      "prompt_rules": [
+        "Ask for clarification when the user refers to this, that, it, a symptom, a treatment effect, or a test result without naming it specifically enough for a safe answer.",
+        "When the concern is vague, ask a specific follow-up that elicits the missing symptom, biomarker, timeframe, or treatment context."
+      ]
+    },
+    {
+      "concept_id": "disambiguation.general_vs_personal_scope",
+      "label": "General Versus Personal Scope",
+      "provenance_type": "literature_grounded",
+      "source_refs": [
+        "dorfman_2022_symptom_communication",
+        "maas_2026_information_needs",
+        "gilligan_2017_asco_communication"
+      ],
+      "evidence_summary": "Cancer survivorship communication literature highlights the need for individualized, patient-centered information and explicit elicitation of what kind of help the patient wants.",
+      "prompt_rules": [
+        "If a health topic could reasonably mean either general education or the user's own symptoms, treatment effects, or test results, clarify the intended scope before interpretation.",
+        "Prefer a short scope question such as whether the user wants a general explanation or advice about their own situation.",
+        "When the user names only a broad care process or follow-up concept without the clinical target or treatment context, ask what condition, treatment, organ system, or surveillance context they mean before answering."
+      ]
+    },
+    {
+      "concept_id": "disambiguation.developmentally_appropriate_followup",
+      "label": "Developmentally Appropriate Follow-Up",
+      "provenance_type": "literature_grounded",
+      "source_refs": [
+        "dorfman_2022_symptom_communication",
+        "maas_2026_information_needs"
+      ],
+      "evidence_summary": "AYA survivorship literature emphasizes concise, personalized, developmentally appropriate information rather than generic information dumps.",
+      "prompt_rules": [
+        "After clarification, answer in a concise, user-friendly way that reflects the user's background and concern instead of listing raw citations or article titles.",
+        "Tailor the explanation to the user's situation and avoid overloading them with literature-style phrasing."
+      ]
+    },
+    {
+      "concept_id": "disambiguation.safe_non_answer_and_handoff",
+      "label": "Safe Non-Answer and Handoff",
+      "provenance_type": "literature_grounded",
+      "source_refs": [
+        "amith_2019_phido",
+        "gilligan_2017_asco_communication",
+        "bickmore_2011_health_counseling_ontology"
+      ],
+      "evidence_summary": "Published health dialogue models include explicit non-answer and information-gathering behaviors when the system cannot yet respond safely.",
+      "prompt_rules": [
+        "If the system still lacks enough information after an initial clarification opportunity, acknowledge the uncertainty and ask one focused follow-up rather than guessing.",
+        "Use HITL review or escalation when ambiguity affects safety, urgency, or the choice between reassurance and triage."
+      ]
+    }
+  ]
+}

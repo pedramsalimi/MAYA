@@ -234,6 +234,7 @@ def read_text(
 def stream_updates(app, payload, base_config):
     final_text = None
     interrupts = []
+    seen_health_rag_traces: set[tuple[bool, str, bool, bool]] = set()
 
     for chunk in app.stream(
         payload,
@@ -258,13 +259,39 @@ def stream_updates(app, payload, base_config):
                 role = last.get("role") or last.get("type")
                 name = last.get("name")
                 content = last.get("content")
+                additional_kwargs = last.get("additional_kwargs") or {}
             else:
                 role = last.type
                 name = last.name
                 content = last.content
+                additional_kwargs = getattr(last, "additional_kwargs", {}) or {}
 
             if name:
                 print(f"[{node}] {role} :: {name}")
+
+            workflow_trace = additional_kwargs.get("workflow_trace")
+            if isinstance(workflow_trace, list):
+                for item in workflow_trace:
+                    if not isinstance(item, dict):
+                        continue
+                    stage = str(item.get("stage", "")).strip()
+                    if stage != "health_rag":
+                        continue
+                    memory_hit = bool(item.get("memory_hit"))
+                    memory_lookup = str(item.get("memory_lookup", ""))
+                    retrieval_used = bool(item.get("retrieval_used"))
+                    summary_stored = bool(item.get("summary_stored"))
+                    trace_key = (memory_hit, memory_lookup, retrieval_used, summary_stored)
+                    if trace_key in seen_health_rag_traces:
+                        continue
+                    seen_health_rag_traces.add(trace_key)
+                    print(
+                        "[health_rag] trace :: "
+                        f"memory_hit={memory_hit} "
+                        f"memory_lookup={memory_lookup or 'unknown'} "
+                        f"retrieval_used={retrieval_used} "
+                        f"summary_stored={summary_stored}"
+                    )
 
             if role in {"assistant", "ai"} and content:
                 final_text = content

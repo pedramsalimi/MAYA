@@ -5,19 +5,16 @@ from typing import List, NotRequired, TypedDict
 from langchain.agents import AgentState as BaseAgentState
 
 
-class PubMedCitation(TypedDict, total=False):
-    """Structured metadata describing a PubMed snippet."""
+class LocalCitation(TypedDict, total=False):
+    """Structured metadata describing a retrieved local-literature snippet."""
 
     title: str
-    summary: str
-    url: str
-    pmid: NotRequired[str]
-    journal: NotRequired[str]
-    year: NotRequired[str]
-    score: NotRequired[float]
+    excerpt: str
+    source_path: NotRequired[str]
+    page_number: NotRequired[int]
 
 
 class HealthRagState(BaseAgentState):
-    """State extension for the health agent (optional citation ledger)."""
+    """State extension for the local-literature health agent."""
 
-    citations: NotRequired[List[PubMedCitation]]
+    citations: NotRequired[List[LocalCitation]]
