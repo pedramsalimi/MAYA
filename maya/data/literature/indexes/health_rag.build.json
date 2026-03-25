@@ -3,7 +3,7 @@
   "collection_name": "maya_health_rag",
   "embedding_backend": "huggingface",
   "embedding_model": "sentence-transformers/all-mpnet-base-v2",
-  "source_documents": 19,
-  "chunks": 3491,
+  "source_documents": 120,
+  "chunks": 11374,
   "chunk_snapshot": "/Users/p.salimi1/Documents/MAYA/maya/data/literature/indexes/health_rag_chunks.jsonl"
 }
