@@ -132,6 +132,45 @@ def build_supervisor():
                 return message
         return None
 
+    def _recent_health_context(messages: list[Any]) -> str:
+        prior_user = ""
+        prior_health_answer = ""
+
+        last_user_index = max(
+            (index for index, message in enumerate(messages) if isinstance(message, HumanMessage)),
+            default=-1,
+        )
+        if last_user_index <= 0:
+            return ""
+
+        for message in reversed(messages[:last_user_index]):
+            if not prior_health_answer and isinstance(message, AIMessage):
+                extra = getattr(message, "additional_kwargs", {}) or {}
+                trace = extra.get("workflow_trace") or []
+                if any(
+                    isinstance(item, dict) and item.get("stage") == "health_rag"
+                    for item in trace
+                ):
+                    text = getattr(message, "content", "").strip()
+                    if text:
+                        prior_health_answer = text
+                        continue
+
+            if not prior_user and isinstance(message, HumanMessage):
+                text = getattr(message, "content", "").strip()
+                if text:
+                    prior_user = text
+
+            if prior_user and prior_health_answer:
+                break
+
+        parts: list[str] = []
+        if prior_user:
+            parts.append(f"Previous user health question: {prior_user}")
+        if prior_health_answer:
+            parts.append(f"Previous health answer: {prior_health_answer}")
+        return "\n".join(parts)
+
     def supervisor(state: MessagesState, config: RunnableConfig, store: BaseStore):
 
         """Load memories from the store and use them to personalize the chatbot's response."""
@@ -382,11 +421,16 @@ def build_supervisor():
         question = human_messages[-1].content.strip() if human_messages else ""
         if not question:
             question = "Please answer the user's latest health question."
+        health_context = _recent_health_context(messages)
         agent = agent_by_name.get("health_rag")
         if agent is None:
             return send("Health specialist not available right now.")
 
-        decision = agent.assess_clarification(question, model=model)
+        decision = agent.assess_clarification(
+            question,
+            model=model,
+            conversation_context=health_context,
+        )
         prompt = decision.clarification_question.strip()
         if decision.needs_clarification and prompt:
             clarification = interrupt(prompt)
@@ -397,9 +441,15 @@ def build_supervisor():
                 return send(prompt)
             question = f"Original question: {question}\nUser clarification: {clarification_text}"
 
+        standalone_question = (
+            f"{health_context}\n\nCurrent user question: {question}"
+            if health_context
+            else question
+        )
+
         user_id = config["configurable"]["user_id"]
         namespace = ("health_rag", user_id, "qa_history")
-        normalized_query = " ".join(re.sub(r"[^a-z0-9]+", " ", question.lower()).split())
+        normalized_query = " ".join(re.sub(r"[^a-z0-9]+", " ", standalone_question.lower()).split())
         summary_key = f"summary:{hashlib.sha256(normalized_query.encode('utf-8')).hexdigest()[:16]}"
 
         exact_item = store.get(namespace, summary_key)
@@ -417,7 +467,7 @@ def build_supervisor():
                         "memory_key": getattr(exact_item, "key", summary_key),
                         "retrieval_used": False,
                         "summary_stored": False,
-                        "query": question,
+                        "query": standalone_question,
                         "citations": value.get("citations", [])[:2],
                     },
                 )
@@ -427,7 +477,22 @@ def build_supervisor():
             semantic_item = semantic_items[0]
             semantic_value = getattr(semantic_item, "value", {})
             semantic_score = float(getattr(semantic_item, "score", 0.0) or 0.0)
-            if isinstance(semantic_value, dict) and semantic_value.get("summary") and semantic_score >= 0.82:
+            normalized_user_question = " ".join(re.sub(r"[^a-z0-9]+", " ", question.lower()).split())
+            stored_user_question = str(semantic_value.get("user_question") or "").strip()
+            normalized_stored_user_question = " ".join(
+                re.sub(r"[^a-z0-9]+", " ", stored_user_question.lower()).split()
+            )
+            current_tokens = set(normalized_user_question.split())
+            stored_tokens = set(normalized_stored_user_question.split())
+            token_overlap = (
+                len(current_tokens & stored_tokens) / max(len(current_tokens), len(stored_tokens), 1)
+            )
+            if (
+                isinstance(semantic_value, dict)
+                and semantic_value.get("summary")
+                and semantic_score >= 0.82
+                and token_overlap >= 0.6
+            ):
                 return send(
                     f"We discussed something similar before. {semantic_value['summary']}",
                     {
@@ -439,13 +504,17 @@ def build_supervisor():
                         "memory_key": getattr(semantic_item, "key", ""),
                         "retrieval_used": False,
                         "summary_stored": False,
-                        "query": question,
+                        "query": standalone_question,
                         "citations": semantic_value.get("citations", [])[:2],
                     },
                 )
 
         result = agent.agent.invoke(
-            {"messages": [HumanMessage(content=question)]},
+            {
+                "messages": [HumanMessage(content=question)],
+                "conversation_context": health_context,
+                "standalone_question": standalone_question,
+            },
             config={"recursion_limit": 10},
         )
         answer_message = result["messages"][-1] if isinstance(result, dict) else None
@@ -459,7 +528,9 @@ def build_supervisor():
                 namespace,
                 summary_key,
                 {
-                    "query": question,
+                    "query": standalone_question,
+                    "user_question": question,
+                    "normalized_user_question": " ".join(re.sub(r"[^a-z0-9]+", " ", question.lower()).split()),
                     "normalized_query": normalized_query,
                     "summary": summary_text,
                     "citations": citations,
@@ -480,7 +551,7 @@ def build_supervisor():
                 "memory_key": summary_key,
                 "retrieval_used": True,
                 "summary_stored": summary_stored,
-                "query": question,
+                "query": standalone_question,
                 "citations": citations,
             },
         )

@@ -300,7 +300,7 @@ def stream_updates(app, payload, base_config):
 
 
 def main() -> None:
-    user_id = os.getenv("MAYA_RUN_USER_ID", "test")
+    user_id = os.getenv("MAYA_RUN_USER_ID", "test1")
     thread_id = os.getenv("MAYA_RUN_THREAD_ID", "test21")
     base_config = {
         "configurable": {"thread_id": thread_id, "user_id": user_id},

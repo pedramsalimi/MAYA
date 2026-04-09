@@ -16,7 +16,13 @@ from pydantic import BaseModel, Field
 
 from maya.agents.health_rag.state import HealthRagState
 from maya.framework.ontologies import load_ontology, render_ontology_block
-from maya.framework.rag.corpus import chunk_snapshot_path, corpus_root, load_chunk_snapshot, load_corpus_documents, split_documents
+from maya.framework.rag.corpus import (
+    chunk_snapshot_path,
+    corpus_root,
+    load_chunk_snapshot,
+    load_corpus_documents,
+    split_documents,
+)
 from maya.framework.rag.vectorstore import build_embeddings, build_vector_store, load_rag_vector_config
 
 
@@ -24,9 +30,14 @@ AGENT_ID = "health_rag"
 
 
 class DisambiguationDecision(BaseModel):
-    needs_clarification: bool = Field(description="Whether the question is too underspecified to answer safely.")
+    needs_clarification: bool = Field(
+        description="Whether the question is too underspecified to answer safely."
+    )
     ambiguity_reason: str = Field(default="", description="Short reason for the decision.")
-    clarification_question: str = Field(default="", description="A single focused clarification question when clarification is required.")
+    clarification_question: str = Field(
+        default="",
+        description="A single focused clarification question when clarification is required.",
+    )
 
 
 class RetrieveLocalLiterature(AgentMiddleware[HealthRagState, Any]):
@@ -36,11 +47,12 @@ class RetrieveLocalLiterature(AgentMiddleware[HealthRagState, Any]):
         self.retriever = retriever
 
     def before_model(self, state: HealthRagState, runtime: Any) -> dict[str, Any] | None:
-        question = ""
-        for message in reversed(state.get("messages", [])):
-            if isinstance(message, HumanMessage):
-                question = message.content.strip()
-                break
+        question = str(state.get("standalone_question") or "").strip()
+        if not question:
+            for message in reversed(state.get("messages", [])):
+                if isinstance(message, HumanMessage):
+                    question = message.content.strip()
+                    break
         if not question:
             return {"citations": []}
 
@@ -64,23 +76,35 @@ class RetrieveLocalLiterature(AgentMiddleware[HealthRagState, Any]):
 @dynamic_prompt
 def health_rag_prompt(request: ModelRequest) -> str:
     citations = request.state.get("citations") or []
+    conversation_context = str(request.state.get("conversation_context") or "").strip()
+
+    sections = [
+        "You are MAYA's health literature assistant.",
+        "Use recent health conversation context if it is relevant.",
+    ]
+
+    if conversation_context:
+        sections.append(f"Recent health conversation context:\n{conversation_context}")
+
     if not citations:
-        return (
-            "You are MAYA's health literature assistant. "
+        sections.append(
             "If the retrieved local literature does not contain a relevant answer, say that clearly and briefly."
         )
+        return "\n\n".join(sections)
 
     context = "\n\n".join(
         f"{item.get('title', 'Local literature')} (page {int(item.get('page_number', 0)) + 1})\n{item.get('excerpt', '')}"
         for item in citations
     )
-    return (
-        "You are MAYA's health literature assistant. "
-        "Answer only from the retrieved local literature below. "
-        "Write 2 to 4 short plain-English sentences. "
-        "Do not invent facts. If the retrieved context is insufficient, say so briefly.\n\n"
-        f"Retrieved local literature:\n{context}"
+    sections.extend(
+        [
+            "Answer only from the retrieved local literature below.",
+            "Answer with scientific details in 4 to 5 sentences.",
+            "Do not invent facts. If the retrieved context is insufficient, say so briefly.",
+            f"Retrieved local literature:\n{context}",
+        ]
     )
+    return "\n\n".join(sections)
 
 
 @dataclass(frozen=True)
@@ -89,7 +113,13 @@ class HealthRagHandle:
     agent: Any
     ontology_block: str
 
-    def assess_clarification(self, question: str, *, model: Any) -> DisambiguationDecision:
+    def assess_clarification(
+        self,
+        question: str,
+        *,
+        model: Any,
+        conversation_context: str = "",
+    ) -> DisambiguationDecision:
         if not question.strip() or model is None:
             return DisambiguationDecision(needs_clarification=False)
 
@@ -105,12 +135,23 @@ class HealthRagHandle:
                     "If needs_clarification is false, leave clarification_question empty.\n\n"
                     "{ontology}",
                 ),
-                ("human", "User question: {question}"),
+                (
+                    "human",
+                    "Recent health conversation context:\n{conversation_context}\n\n"
+                    "Current user question:\n{question}",
+                ),
             ]
         )
         try:
             chain = prompt | model.with_structured_output(DisambiguationDecision, strict=True)
-            decision = chain.invoke({"question": question, "ontology": self.ontology_block})
+            decision = chain.invoke(
+                {
+                    "question": question,
+                    "conversation_context": conversation_context,
+                    "ontology": self.ontology_block,
+                }
+            )
+
             if isinstance(decision, DisambiguationDecision):
                 return decision
         except Exception:

@@ -18,3 +18,5 @@ class HealthRagState(BaseAgentState):
     """State extension for the local-literature health agent."""
 
     citations: NotRequired[List[LocalCitation]]
+    conversation_context: NotRequired[str]
+    standalone_question: NotRequired[str]
