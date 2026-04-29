@@ -3,6 +3,10 @@ from __future__ import annotations
 import os
 import sys
 import queue
+import select
+import uuid
+import atexit
+import fcntl
 from collections import deque
 from dataclasses import dataclass
 from io import BytesIO
@@ -13,7 +17,7 @@ import sounddevice as sd
 import soundfile as sf
 import webrtcvad
 from dotenv import load_dotenv
-from openai import OpenAI, AzureOpenAI
+from openai import OpenAI, AzureOpenAI, BadRequestError
 import azure.cognitiveservices.speech as speechsdk
 from langgraph.types import Command
 from utils import strip_markdown, strip_citations_and_references
@@ -107,18 +111,48 @@ def speak(tts: speechsdk.SpeechSynthesizer | None, text: str) -> None:
         print(f"[tts] {tts_err}")
 
 
+def init_phyxio_io():
+    if os.getenv("MAYA_ENABLE_PHYXIO_IO", "1").strip().lower() not in {"1", "true", "yes"}:
+        return None
+    try:
+        from maya.agents.phyxio_exercise_agent.bridge import get_phyxio_service
+
+        return get_phyxio_service()
+    except Exception as phyxio_err:
+        print(f"[phyxio] disabled: {phyxio_err}")
+        return None
+
+
+def speak_phyxio(phyxio_io, text: str) -> None:
+    if not phyxio_io or not text:
+        return
+    try:
+        phyxio_io.show_text(text)
+        phyxio_io.speak_text(text)
+    except Exception as phyxio_err:
+        print(f"[phyxio][tts] {phyxio_err}")
+
+
+def speak_output(tts: speechsdk.SpeechSynthesizer | None, phyxio_io, text: str) -> None:
+    if phyxio_io is not None:
+        speak_phyxio(phyxio_io, text)
+    else:
+        speak(tts, text)
+
+
 def read_text(
     prompt_text: str | None,
     tts: speechsdk.SpeechSynthesizer | None,
     asr_client: object | None,
     asr_model: str | None,
     voice: VoiceConfig,
+    phyxio_io=None,
     *,
     allow_exit: bool = False,
     blank_returns_none: bool = False,
 ) -> str | None:
     if prompt_text:
-        speak(tts, prompt_text)
+        speak_output(tts, phyxio_io, prompt_text)
         input_prompt = f"MAYA: {prompt_text}\nYou: "
     else:
         input_prompt = "You: "
@@ -200,16 +234,42 @@ def read_text(
         return (getattr(transcription, "text", None) or "").strip()
 
     while True:
-        try:
-            user_input = input(input_prompt).strip()
-        except (EOFError, KeyboardInterrupt):
-            print()
-            return None
+        if phyxio_io is not None:
+            print(input_prompt, end="", flush=True)
+            while True:
+                try:
+                    mirror_text = phyxio_io.asr_queue.get_nowait()
+                except queue.Empty:
+                    mirror_text = ""
+                except Exception:
+                    mirror_text = ""
+                if isinstance(mirror_text, str) and mirror_text.strip():
+                    spoken = mirror_text.strip()
+                    print()
+                    print(f"You (phyxio): {spoken}")
+                    return spoken
+                try:
+                    ready, _, _ = select.select([sys.stdin], [], [], 0.2)
+                except (ValueError, OSError):
+                    ready = []
+                if ready:
+                    raw = sys.stdin.readline()
+                    if raw == "":
+                        print()
+                        return None
+                    user_input = raw.strip()
+                    break
+        else:
+            try:
+                user_input = input(input_prompt).strip()
+            except (EOFError, KeyboardInterrupt):
+                print()
+                return None
 
         if allow_exit and user_input in {"/exit", "/quit"}:
             return None
 
-        wants_voice = user_input == "/voice" or (user_input == "" and asr_client)
+        wants_voice = user_input == "/voice" or (user_input == "" and asr_client and phyxio_io is None)
         if wants_voice:
             if not asr_client or not asr_model:
                 if user_input == "/voice":
@@ -225,6 +285,9 @@ def read_text(
 
         if user_input:
             return user_input
+
+        if phyxio_io is not None:
+            continue
 
         if blank_returns_none:
             return None
@@ -243,27 +306,42 @@ def stream_updates(app, payload, base_config):
         subgraphs=True,
     ):
         update = chunk[1] if isinstance(chunk, tuple) else chunk
+        if not isinstance(update, dict):
+            continue
 
         if "__interrupt__" in update:
-            interrupts.extend(update["__interrupt__"])
+            interrupts.extend(update.get("__interrupt__", []))
             continue
 
         for node, node_payload in update.items():
-            messages = node_payload.get("messages", [])
+            if node == "__interrupt__" or node_payload is None:
+                continue
+
+            if isinstance(node_payload, dict):
+                messages = node_payload.get("messages", [])
+            elif isinstance(node_payload, list):
+                messages = node_payload
+            else:
+                messages = getattr(node_payload, "messages", [])
+
+            if messages is None:
+                continue
             if isinstance(messages, dict):
                 messages = list(messages.values())
+            elif not isinstance(messages, list):
+                messages = [messages]
             if not messages:
                 continue
             last = messages[-1]
-            if hasattr(last, "get"):
+            if isinstance(last, dict):
                 role = last.get("role") or last.get("type")
                 name = last.get("name")
                 content = last.get("content")
                 additional_kwargs = last.get("additional_kwargs") or {}
             else:
-                role = last.type
-                name = last.name
-                content = last.content
+                role = getattr(last, "type", None)
+                name = getattr(last, "name", None)
+                content = getattr(last, "content", None)
                 additional_kwargs = getattr(last, "additional_kwargs", {}) or {}
 
             if name:
@@ -299,9 +377,50 @@ def stream_updates(app, payload, base_config):
     return final_text, interrupts
 
 
+def is_tool_call_history_error(err: Exception) -> bool:
+    if not isinstance(err, BadRequestError):
+        return False
+    text = str(err)
+    return (
+        "assistant message with 'tool_calls' must be followed by tool messages" in text
+        and "tool_call_id" in text
+    )
+
+
+def acquire_single_instance_lock():
+    lock_path = os.getenv("MAYA_RUN_LOCK", "/tmp/maya_run_with_vad.lock")
+    lock_file = open(lock_path, "w", encoding="utf-8")
+    try:
+        fcntl.flock(lock_file.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+    except BlockingIOError:
+        owner = "unknown"
+        try:
+            with open(lock_path, "r", encoding="utf-8") as existing:
+                owner = (existing.read() or "").strip() or owner
+        except Exception:
+            pass
+        print(
+            f"[runner] Another run_with_vad instance is active (pid={owner}). "
+            "Stop it before starting a new one."
+        )
+        lock_file.close()
+        return None
+
+    lock_file.seek(0)
+    lock_file.truncate()
+    lock_file.write(str(os.getpid()))
+    lock_file.flush()
+    return lock_file
+
+
 def main() -> None:
+    lock_file = acquire_single_instance_lock()
+    if lock_file is None:
+        return
+    atexit.register(lock_file.close)
+
     user_id = os.getenv("MAYA_RUN_USER_ID", "test1")
-    thread_id = os.getenv("MAYA_RUN_THREAD_ID", "test21")
+    thread_id = os.getenv("MAYA_RUN_THREAD_ID") or f"run-{uuid.uuid4().hex[:10]}"
     base_config = {
         "configurable": {"thread_id": thread_id, "user_id": user_id},
         "recursion_limit": 40,
@@ -315,8 +434,11 @@ def main() -> None:
         rate=VOICE_RATE,
     )
     tts = init_tts()
+    phyxio_io = init_phyxio_io()
 
-    if asr_client:
+    if phyxio_io is not None:
+        print("Type a message or speak from the Phyxio mirror. (Ctrl+C to exit.)")
+    elif asr_client:
         print("Type a message or press Enter for voice input. (Ctrl+C to exit.)")
     else:
         print("Type your message (blank line to exit).")
@@ -328,6 +450,7 @@ def main() -> None:
             asr_client,
             asr_model,
             voice,
+            phyxio_io,
             allow_exit=True,
             blank_returns_none=True,
         )
@@ -337,12 +460,24 @@ def main() -> None:
         payload = {"messages": [{"role": "user", "content": user_message}]}
 
         while True:
-            final_text, interrupts = stream_updates(app, payload, base_config)
+            try:
+                final_text, interrupts = stream_updates(app, payload, base_config)
+            except Exception as err:
+                if is_tool_call_history_error(err):
+                    new_thread = f"run-{uuid.uuid4().hex[:10]}"
+                    base_config["configurable"]["thread_id"] = new_thread
+                    print(
+                        "[runner] recovered from invalid stored tool-call history; "
+                        f"switched to thread_id={new_thread} and retrying."
+                    )
+                    final_text, interrupts = stream_updates(app, payload, base_config)
+                else:
+                    raise
             if interrupts:
                 answers: list[str] = []
                 for interrupt_ in interrupts:
                     prompt = str(interrupt_.value)
-                    answer = read_text(prompt, tts, asr_client, asr_model, voice)
+                    answer = read_text(prompt, tts, asr_client, asr_model, voice, phyxio_io)
                     answers.append(answer)
                 resume_value = answers[0] if len(answers) == 1 else answers
                 payload = Command(resume=resume_value)
@@ -352,7 +487,7 @@ def main() -> None:
         if final_text:
             final_text = strip_citations_and_references(strip_markdown(final_text))
             print(f"\n***************\n\nMAYA: {final_text}")
-            speak(tts, final_text)
+            speak_output(tts, phyxio_io, final_text)
 
 
 if __name__ == "__main__":

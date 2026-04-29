@@ -14,7 +14,7 @@ from langchain_core.runnables import RunnableConfig
 from langchain_core.messages import merge_message_runs, HumanMessage, SystemMessage, AIMessage, ToolMessage
 
 from langgraph.checkpoint.memory import MemorySaver
-from langgraph.graph import StateGraph, MessagesState, END, START
+from langgraph.graph import StateGraph, END, START
 from langgraph.store.base import BaseStore
 from langgraph.store.memory import InMemoryStore
 
@@ -22,6 +22,7 @@ from langgraph.store.memory import InMemoryStore
 from langchain_openai import AzureChatOpenAI
 from maya.agents.config import load_agent_specs
 from maya.framework.memory import get_postgres_memory   
+from maya.framework.supervisor.state import SupervisorState
 from dotenv import load_dotenv
 from .prompts import (
     TRUSTCALL_INSTRUCTION,
@@ -68,26 +69,26 @@ class UserClarification(TypedDict):
     """User clarification response."""
     clarification: str
 
-# Update memory tool
-class RouteState(TypedDict):
-    """Routing decision for supervisor -> tool nodes."""
-
-    route_type: Literal['user_profile', 'general_memory', 'health_rag', 'scan_portal']
-
-
 class SupervisorRouteDecision(BaseModel):
     """Validated supervisor route decision for the current turn."""
 
-    route_type: Literal["direct_answer", "user_profile", "general_memory", "health_rag", "scan_portal"] = Field(
+    route_type: Literal[
+        "direct_answer",
+        "user_profile",
+        "general_memory",
+        "health_rag",
+        "scan_portal",
+        "phyxio_exercise_agent",
+    ] = Field(
         description="Choose exactly one route. Use direct_answer only for non-health turns that do not require profile or memory storage."
     )
 
 
 class HealthRouteGuardDecision(BaseModel):
-    """Validation pass to prevent health questions from falling through to direct answers."""
+    """Validation pass to prevent specialist requests from falling through to direct answers."""
 
-    route_type: Literal["direct_answer", "health_rag"] = Field(
-        description="Choose health_rag for any health-related message, otherwise direct_answer."
+    route_type: Literal["direct_answer", "health_rag", "scan_portal", "phyxio_exercise_agent"] = Field(
+        description="Choose a specialist route for health, scan, or exercise requests; otherwise direct_answer."
     )
 
 class Memory(BaseModel):
@@ -171,7 +172,7 @@ def build_supervisor():
             parts.append(f"Previous health answer: {prior_health_answer}")
         return "\n".join(parts)
 
-    def supervisor(state: MessagesState, config: RunnableConfig, store: BaseStore):
+    def supervisor(state: SupervisorState, config: RunnableConfig, store: BaseStore):
 
         """Load memories from the store and use them to personalize the chatbot's response."""
         
@@ -219,22 +220,11 @@ def build_supervisor():
                     latest_user,
                 ]
             )
-            if isinstance(health_guard, HealthRouteGuardDecision) and health_guard.route_type == "health_rag":
-                decision = SupervisorRouteDecision(route_type="health_rag")
+            if isinstance(health_guard, HealthRouteGuardDecision) and health_guard.route_type != "direct_answer":
+                decision = SupervisorRouteDecision(route_type=health_guard.route_type)
 
         if isinstance(decision, SupervisorRouteDecision) and decision.route_type != "direct_answer":
-            response = AIMessage(
-                content="",
-                tool_calls=[
-                    {
-                        "id": f"call_{uuid.uuid4().hex[:12]}",
-                        "name": "RouteState",
-                        "args": {"route_type": decision.route_type},
-                        "type": "tool_call",
-                    }
-                ],
-            )
-            return {"messages": [response]}
+            return {"route_type": decision.route_type}
 
         answer_messages = [
             SystemMessage(
@@ -248,9 +238,9 @@ def build_supervisor():
         if latest_user is not None:
             answer_messages.append(latest_user)
         response = model.invoke(answer_messages)
-        return {"messages": [response]}
+        return {"messages": [response], "route_type": "direct_answer"}
 
-    def update_memory(state: MessagesState, config: RunnableConfig, store: BaseStore):
+    def update_memory(state: SupervisorState, config: RunnableConfig, store: BaseStore):
 
         """Reflect on the chat history and update the memory collection."""
         
@@ -273,7 +263,7 @@ def build_supervisor():
 
         # Merge the chat history and the instruction
         MEMORY_UPDATE_INSTRUCTION_FORMATTED=MEMORY_UPDATE_INSTRUCTION.format(time=datetime.now().isoformat())
-        updated_messages=list(merge_message_runs(messages=[SystemMessage(content=MEMORY_UPDATE_INSTRUCTION_FORMATTED)] + state["messages"][:-1]))
+        updated_messages=list(merge_message_runs(messages=[SystemMessage(content=MEMORY_UPDATE_INSTRUCTION_FORMATTED)] + state["messages"]))
 
         # Invoke the extractor
         result = memory_extractor.invoke({"messages": updated_messages, 
@@ -285,11 +275,10 @@ def build_supervisor():
                     rmeta.get("json_doc_id", str(uuid.uuid4())),
                     r.model_dump(mode="json"),
                 )
-        tool_calls = state['messages'][-1].tool_calls
-        return {"messages": [{"role": "tool", "content": "updated memory", "tool_call_id":tool_calls[0]['id']}]}
+        return {"messages": [AIMessage(content="I'll remember that.")]}
 
 
-    def update_profile(state: MessagesState, config: RunnableConfig, store: BaseStore):
+    def update_profile(state: SupervisorState, config: RunnableConfig, store: BaseStore):
 
         """Reflect on the chat history and update the memory collection."""
         
@@ -312,7 +301,7 @@ def build_supervisor():
 
         # Merge the chat history and the instruction
         TRUSTCALL_INSTRUCTION_FORMATTED=TRUSTCALL_INSTRUCTION.format(time=datetime.now().isoformat())
-        updated_messages=list(merge_message_runs(messages=[SystemMessage(content=TRUSTCALL_INSTRUCTION_FORMATTED)] + state["messages"][:-1]))
+        updated_messages=list(merge_message_runs(messages=[SystemMessage(content=TRUSTCALL_INSTRUCTION_FORMATTED)] + state["messages"]))
 
         # Invoke the extractor
         result = profile_extractor.invoke({"messages": updated_messages, 
@@ -324,36 +313,17 @@ def build_supervisor():
                     rmeta.get("json_doc_id", str(uuid.uuid4())),
                     r.model_dump(mode="json"),
                 )
-        tool_calls = state['messages'][-1].tool_calls
-        return {"messages": [{"role": "tool", "content": "updated profile", "tool_call_id":tool_calls[0]['id']}]}
+        return {"messages": [AIMessage(content="Thanks, I'll remember that.")]}
 
     def scan_portal_node(
-        state: MessagesState,
+        state: SupervisorState,
         config: RunnableConfig,
         store: BaseStore,
     ) -> Dict[str, List[Any]]:
         """Launch the facial scan portal for biomarker capture."""
 
-        messages = state["messages"]
-        last = messages[-1] if messages else None
-        tool_call_id = (
-            last.tool_calls[0]["id"]
-            if isinstance(last, AIMessage) and getattr(last, "tool_calls", None)
-            else None
-        )
-
         def send(text: str) -> Dict[str, List[Any]]:
             text = (text or "").strip() or "Scan portal ready."
-            if tool_call_id:
-                return {
-                    "messages": [
-                        ToolMessage(
-                            content=text,
-                            tool_call_id=tool_call_id,
-                            name="RouteState",
-                        )
-                    ]
-                }
             return {"messages": [AIMessage(content=text)]}
 
         url = SCAN_PORTAL_URL
@@ -385,36 +355,18 @@ def build_supervisor():
         return send(message)
 
     def health_rag_node(
-        state: MessagesState,
+        state: SupervisorState,
         config: RunnableConfig,
         store: BaseStore,
     ) -> Dict[str, List[Any]]:
         """Answer medical questions from the local literature corpus."""
         messages = state["messages"]
-        last = messages[-1] if messages else None
-        tool_call_id = (
-            last.tool_calls[0]["id"]
-            if isinstance(last, AIMessage) and getattr(last, "tool_calls", None)
-            else None
-        )
-
         def send(text: str, trace: dict[str, Any] | None = None) -> Dict[str, List[Any]]:
             text = (text or "").strip() or "Health specialist completed without response."
-            if tool_call_id:
-                extra = {"source": "health_rag"}
-                if trace:
-                    extra["workflow_trace"] = [trace]
-                return {
-                    "messages": [
-                        ToolMessage(
-                            content=text,
-                            tool_call_id=tool_call_id,
-                            name="RouteState",
-                            additional_kwargs=extra,
-                        )
-                    ]
-                }
-            return {"messages": [AIMessage(content=text)]}
+            extra = {"source": "health_rag"}
+            if trace:
+                extra["workflow_trace"] = [trace]
+            return {"messages": [AIMessage(content=text, additional_kwargs=extra)]}
 
         # Latest user question
         human_messages = [m for m in messages if isinstance(m, HumanMessage)]
@@ -556,7 +508,11 @@ def build_supervisor():
             },
         )
 
-    def route_message(state: MessagesState, config: RunnableConfig, store: BaseStore) -> Literal[END, "update_profile", "update_memory", "health_rag", "scan_portal"]:
+    def route_message(
+        state: SupervisorState,
+        config: RunnableConfig,
+        store: BaseStore,
+    ) -> Literal[END, "update_profile", "update_memory", "health_rag", "scan_portal", "phyxio_exercise_agent"]:
 
         """
         Use this tool to decide where to route the user’s request:
@@ -564,23 +520,23 @@ def build_supervisor():
         - 'user_profile' for stable personal facts
         - 'general_memory' for experiences / events / feelings
         - 'scan_portal' when the user asks to run the facial scan.
+        - 'phyxio_exercise_agent' when the user asks to show, calibrate, or start exercises.
         """
 
-        message = state['messages'][-1]
-        if len(message.tool_calls) == 0:
+        route_type = state.get("route_type")
+        if route_type == "direct_answer" or not route_type:
             return END
-        else:
-            tool_call = message.tool_calls[0]
-            if tool_call['args']['route_type'] == "user_profile":
-                return "update_profile"
-            elif tool_call['args']['route_type'] == "general_memory":
-                return "update_memory"
-            elif tool_call['args']['route_type'] == "health_rag":
-                return "health_rag"
-            elif tool_call['args']['route_type'] == "scan_portal":
-                return "scan_portal"
-            else:
-                raise ValueError
+        if route_type == "user_profile":
+            return "update_profile"
+        if route_type == "general_memory":
+            return "update_memory"
+        if route_type == "health_rag":
+            return "health_rag"
+        if route_type == "scan_portal":
+            return "scan_portal"
+        if route_type == "phyxio_exercise_agent":
+            return "phyxio_exercise_agent"
+        raise ValueError(f"Unknown supervisor route_type: {route_type}")
             
 
 
@@ -589,7 +545,7 @@ def build_supervisor():
     agents, agent_descriptions = _load_agents()
     agent_by_name = {a.name: a for a in agents}
     # Create the graph + all nodes
-    builder = StateGraph(MessagesState)
+    builder = StateGraph(SupervisorState)
 
     # Define the flow of the memory extraction process
     builder.add_node(supervisor)
@@ -605,10 +561,11 @@ def build_supervisor():
 
     builder.add_edge(START, "supervisor")
     builder.add_conditional_edges("supervisor", route_message)
-    builder.add_edge("update_profile", "supervisor")
-    builder.add_edge("update_memory", "supervisor")
-    builder.add_edge("scan_portal", "supervisor")
-    builder.add_edge("health_rag", "supervisor")
+    builder.add_edge("update_profile", END)
+    builder.add_edge("update_memory", END)
+    builder.add_edge("scan_portal", END)
+    builder.add_edge("health_rag", END)
+    builder.add_edge("phyxio_exercise_agent", END)
 
 
     # We compile the graph with the checkpointer and store

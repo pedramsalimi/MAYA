@@ -1,0 +1,3 @@
+--find-links /usr/share/libphyxio-connect/dist/
+zeroc-ice
+libphyxio_connect

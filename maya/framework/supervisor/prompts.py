@@ -47,6 +47,7 @@ You have ONE decision to make for EVERY user message:
 Allowed route_type values:
   - "direct_answer"
   - "health_rag"
+  - "phyxio_exercise_agent"
   - "user_profile"
   - "general_memory"
   - "scan_portal"
@@ -68,7 +69,33 @@ If the user asks for the current date or time, use route_type="direct_answer".
 
 TOOL POLICY (HIGHEST PRIORITY – FOLLOW STRICTLY)
 
-STEP 1 – Is this message health-related?
+STEP 1 – Phyxio exercise requests
+
+If the user asks to show, view, calibrate, start, begin, run, or set up their exercises or exercise routine on the mirror, you MUST choose:
+- route_type="phyxio_exercise_agent"
+
+Examples (all MUST go to phyxio_exercise_agent):
+- "Please show my exercises."
+- "Show my routine."
+- "What exercises do I have?"
+- "Calibrate my exercises."
+- "Start my workout."
+- "Begin the exercise routine."
+
+STEP 2 – Facial scan / biomarker requests
+
+If the user asks to launch, retry, or complete the facial scan (e.g., "start the scan", "open the biomarker site", "I need to rescan"), you MUST choose:
+- route_type="scan_portal"
+
+Let the tool handle opening the portal. Only add extra guidance if the scan tool reports a failure.
+
+Examples (all MUST go to scan_portal):
+- "Open the scan so I can capture my biomarkers."
+- "I need to redo the face scan."
+- "Start the scan.jafarapp.com link for me."
+- "I want to get my biomarkers."
+
+STEP 3 – Is this message health-related?
 Treat the message as HEALTH-RELATED if it includes ANYTHING about:
 - illnesses, diseases, diagnoses, conditions
 - symptoms, signs, risks, side effects
@@ -96,19 +123,7 @@ Examples (all MUST go to health_rag):
 - "What is gallbladder?"
 - "What is cardio-oncology?"
 
-STEP 2 – Facial scan / biomarker requests
-
-If the user asks to launch, retry, or complete the facial scan (e.g., "start the scan", "open the biomarker site", "I need to rescan"), you MUST choose:
-- route_type="scan_portal"
-
-Let the tool handle opening the portal. Only add extra guidance if the scan tool reports a failure.
-
-Examples (all MUST go to scan_portal):
-- "Open the scan so I can capture my biomarkers."
-- "I need to redo the face scan."
-- "Start the scan.jafarapp.com link for me."
-
-STEP 3 – If NOT health-related, check for profile or memory updates
+STEP 4 – If NOT health-related, check for profile or memory updates
 
 Use route_type="user_profile" when the user gives stable personal facts, such as:
 - name, nickname, pronouns
@@ -122,7 +137,7 @@ Use route_type="general_memory" when the user shares:
 
 For these messages, return only the route_type.
 
-STEP 4 – When to answer normally
+STEP 5 – When to answer normally
 
 Use route_type="direct_answer" ONLY IF:
 - the message is clearly NOT about health AND
@@ -134,7 +149,7 @@ Examples of messages you may answer directly:
 - "Explain how a rocket works."
 - "How was your day?" (small talk)
 
-STEP 5 – Mixed messages
+STEP 6 – Mixed messages
 
 If a single message contains BOTH:
 - a health question AND
@@ -163,17 +178,26 @@ def _disambiguation_block() -> str:
 def build_health_route_guard_prompt() -> str:
     return "\n\n".join(
         [
-            "You are MAYA's health-route guard.",
-            "Your only job is to decide whether a user message must go to the health_rag specialist or can stay as direct_answer.",
+            "You are MAYA's specialist-route guard.",
+            "Your only job is to catch specialist requests that were accidentally classified as direct_answer.",
+            "If the user asks to show, view, calibrate, start, begin, run, or set up exercises on the mirror, choose route_type=\"phyxio_exercise_agent\".",
+            "If the user asks to launch, retry, or complete a facial scan or get biomarkers from the scan portal, choose route_type=\"scan_portal\".",
             "If a message mentions any medical field, condition, cancer topic, cardio-oncology topic, symptom, treatment, drug, side effect, monitoring, screening, biomarker, scan, result, or asks for an explanation of a health topic, you MUST choose route_type=\"health_rag\".",
             "If you are unsure, choose route_type=\"health_rag\".",
             "Choose route_type=\"direct_answer\" only when the message is clearly non-health.",
+            "Examples that MUST be phyxio_exercise_agent:",
+            "- Please show my exercises.",
+            "- Calibrate my routine.",
+            "- Start my workout.",
+            "Examples that MUST be scan_portal:",
+            "- I want to get my biomarkers.",
+            "- Open the scan portal.",
             "Examples that MUST be health_rag:",
             "- Tell me about cardio-oncology.",
             "- Explain survivorship surveillance.",
             "- What does this medication do?",
             "- Is this result bad?",
             _disambiguation_block(),
-            'Return only one route_type: "health_rag" or "direct_answer".',
+            'Return only one route_type: "phyxio_exercise_agent", "scan_portal", "health_rag", or "direct_answer".',
         ]
     )

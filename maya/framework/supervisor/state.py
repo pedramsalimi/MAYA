@@ -1,5 +1,5 @@
 from __future__ import annotations
-from typing_extensions import TypedDict, NotRequired, Annotated
+from typing_extensions import Literal, TypedDict, NotRequired, Annotated
 from langchain_core.messages import AnyMessage
 from langgraph.graph.message import add_messages
 from langgraph.managed.is_last_step import RemainingSteps
@@ -11,3 +11,13 @@ class SupervisorState(TypedDict):
 
     # Optional
     active_agent: NotRequired[str]
+    route_type: NotRequired[
+        Literal[
+            "direct_answer",
+            "user_profile",
+            "general_memory",
+            "health_rag",
+            "scan_portal",
+            "phyxio_exercise_agent",
+        ]
+    ]
