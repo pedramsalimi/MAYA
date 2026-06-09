@@ -520,7 +520,7 @@ def build_supervisor():
         - 'user_profile' for stable personal facts
         - 'general_memory' for experiences / events / feelings
         - 'scan_portal' when the user asks to run the facial scan.
-        - 'phyxio_exercise_agent' when the user asks to show, calibrate, or start exercises.
+        - 'phyxio_exercise_agent' when the user asks to show, open, list, calibrate, start, or review exercise history/progress.
         """
 
         route_type = state.get("route_type")

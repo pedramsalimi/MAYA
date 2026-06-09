@@ -20,15 +20,16 @@ from dotenv import load_dotenv
 from openai import OpenAI, AzureOpenAI, BadRequestError
 import azure.cognitiveservices.speech as speechsdk
 from langgraph.types import Command
-from utils import strip_markdown, strip_citations_and_references
 
 ROOT = Path(__file__).resolve().parents[2]
 os.chdir(ROOT)
 
 if __package__ in {None, ""}:
     sys.path.append(str(ROOT))
+    from utils import strip_markdown, strip_citations_and_references
     from maya.framework.supervisor.factory import build_supervisor
 else:
+    from .utils import strip_markdown, strip_citations_and_references
     from .factory import build_supervisor
 
 load_dotenv()
@@ -47,6 +48,7 @@ VAD_SILENCE_MS = int(os.getenv("MAYA_VAD_SILENCE_MS", "200"))
 VAD_RMS_THRESHOLD = float(os.getenv("MAYA_VAD_RMS_THRESHOLD", "0.006"))
 VOICE_SECONDS = float(os.getenv("MAYA_VOICE_SECONDS", "20"))
 VOICE_RATE = int(os.getenv("MAYA_VOICE_SAMPLE_RATE", "16000"))
+PHYXIO_END_INTERACTION_DELAY = float(os.getenv("MAYA_PHYXIO_END_INTERACTION_DELAY", "4.5"))
 
 
 def init_asr() -> tuple[object | None, str | None]:
@@ -128,14 +130,45 @@ def speak_phyxio(phyxio_io, text: str) -> None:
         return
     try:
         phyxio_io.show_text(text)
+        set_phyxio_state(phyxio_io, "talking")
         phyxio_io.speak_text(text)
     except Exception as phyxio_err:
         print(f"[phyxio][tts] {phyxio_err}")
 
 
-def speak_output(tts: speechsdk.SpeechSynthesizer | None, phyxio_io, text: str) -> None:
+def set_phyxio_state(phyxio_io, state: str) -> None:
+    if not phyxio_io:
+        return
+    try:
+        set_state = getattr(phyxio_io, "set_agent_state", None)
+        if callable(set_state):
+            set_state(state)
+    except Exception as phyxio_err:
+        print(f"[phyxio][state] {phyxio_err}")
+
+
+def end_phyxio_interaction(phyxio_io, delay_seconds: float = PHYXIO_END_INTERACTION_DELAY) -> None:
+    if not phyxio_io:
+        return
+    try:
+        end_interaction = getattr(phyxio_io, "end_interaction", None)
+        if callable(end_interaction):
+            end_interaction(delay_seconds)
+    except Exception as phyxio_err:
+        print(f"[phyxio][end_interaction] {phyxio_err}")
+
+
+def speak_output(
+    tts: speechsdk.SpeechSynthesizer | None,
+    phyxio_io,
+    text: str,
+    *,
+    end_interaction: bool = False,
+) -> None:
     if phyxio_io is not None:
         speak_phyxio(phyxio_io, text)
+        if end_interaction:
+            end_phyxio_interaction(phyxio_io)
     else:
         speak(tts, text)
 
@@ -294,85 +327,89 @@ def read_text(
         return ""
 
 
-def stream_updates(app, payload, base_config):
+def stream_updates(app, payload, base_config, phyxio_io=None):
     final_text = None
     interrupts = []
     seen_health_rag_traces: set[tuple[bool, str, bool, bool]] = set()
 
-    for chunk in app.stream(
-        payload,
-        config=base_config,
-        stream_mode="updates",
-        subgraphs=True,
-    ):
-        update = chunk[1] if isinstance(chunk, tuple) else chunk
-        if not isinstance(update, dict):
-            continue
-
-        if "__interrupt__" in update:
-            interrupts.extend(update.get("__interrupt__", []))
-            continue
-
-        for node, node_payload in update.items():
-            if node == "__interrupt__" or node_payload is None:
+    set_phyxio_state(phyxio_io, "thinking")
+    try:
+        for chunk in app.stream(
+            payload,
+            config=base_config,
+            stream_mode="updates",
+            subgraphs=True,
+        ):
+            update = chunk[1] if isinstance(chunk, tuple) else chunk
+            if not isinstance(update, dict):
                 continue
 
-            if isinstance(node_payload, dict):
-                messages = node_payload.get("messages", [])
-            elif isinstance(node_payload, list):
-                messages = node_payload
-            else:
-                messages = getattr(node_payload, "messages", [])
-
-            if messages is None:
+            if "__interrupt__" in update:
+                interrupts.extend(update.get("__interrupt__", []))
                 continue
-            if isinstance(messages, dict):
-                messages = list(messages.values())
-            elif not isinstance(messages, list):
-                messages = [messages]
-            if not messages:
-                continue
-            last = messages[-1]
-            if isinstance(last, dict):
-                role = last.get("role") or last.get("type")
-                name = last.get("name")
-                content = last.get("content")
-                additional_kwargs = last.get("additional_kwargs") or {}
-            else:
-                role = getattr(last, "type", None)
-                name = getattr(last, "name", None)
-                content = getattr(last, "content", None)
-                additional_kwargs = getattr(last, "additional_kwargs", {}) or {}
 
-            if name:
-                print(f"[{node}] {role} :: {name}")
+            for node, node_payload in update.items():
+                if node == "__interrupt__" or node_payload is None:
+                    continue
 
-            workflow_trace = additional_kwargs.get("workflow_trace")
-            if isinstance(workflow_trace, list):
-                for item in workflow_trace:
-                    if not isinstance(item, dict):
-                        continue
-                    stage = str(item.get("stage", "")).strip()
-                    if stage != "health_rag":
-                        continue
-                    memory_hit = bool(item.get("memory_hit"))
-                    memory_lookup = str(item.get("memory_lookup", ""))
-                    retrieval_used = bool(item.get("retrieval_used"))
-                    summary_stored = bool(item.get("summary_stored"))
-                    trace_key = (memory_hit, memory_lookup, retrieval_used, summary_stored)
-                    if trace_key in seen_health_rag_traces:
-                        continue
-                    seen_health_rag_traces.add(trace_key)
-                    print(
-                        "[health_rag] trace :: "
-                        f"memory_hit={memory_hit} "
-                        f"memory_lookup={memory_lookup or 'unknown'} "
-                        f"retrieval_used={retrieval_used} "
-                        f"summary_stored={summary_stored}"
-                    )
+                if isinstance(node_payload, dict):
+                    messages = node_payload.get("messages", [])
+                elif isinstance(node_payload, list):
+                    messages = node_payload
+                else:
+                    messages = getattr(node_payload, "messages", [])
 
-            if role in {"assistant", "ai"} and content:
-                final_text = content
+                if messages is None:
+                    continue
+                if isinstance(messages, dict):
+                    messages = list(messages.values())
+                elif not isinstance(messages, list):
+                    messages = [messages]
+                if not messages:
+                    continue
+                last = messages[-1]
+                if isinstance(last, dict):
+                    role = last.get("role") or last.get("type")
+                    name = last.get("name")
+                    content = last.get("content")
+                    additional_kwargs = last.get("additional_kwargs") or {}
+                else:
+                    role = getattr(last, "type", None)
+                    name = getattr(last, "name", None)
+                    content = getattr(last, "content", None)
+                    additional_kwargs = getattr(last, "additional_kwargs", {}) or {}
+
+                if name:
+                    print(f"[{node}] {role} :: {name}")
+
+                workflow_trace = additional_kwargs.get("workflow_trace")
+                if isinstance(workflow_trace, list):
+                    for item in workflow_trace:
+                        if not isinstance(item, dict):
+                            continue
+                        stage = str(item.get("stage", "")).strip()
+                        if stage != "health_rag":
+                            continue
+                        memory_hit = bool(item.get("memory_hit"))
+                        memory_lookup = str(item.get("memory_lookup", ""))
+                        retrieval_used = bool(item.get("retrieval_used"))
+                        summary_stored = bool(item.get("summary_stored"))
+                        trace_key = (memory_hit, memory_lookup, retrieval_used, summary_stored)
+                        if trace_key in seen_health_rag_traces:
+                            continue
+                        seen_health_rag_traces.add(trace_key)
+                        print(
+                            "[health_rag] trace :: "
+                            f"memory_hit={memory_hit} "
+                            f"memory_lookup={memory_lookup or 'unknown'} "
+                            f"retrieval_used={retrieval_used} "
+                            f"summary_stored={summary_stored}"
+                        )
+
+                if role in {"assistant", "ai"} and content:
+                    final_text = content
+    finally:
+        set_phyxio_state(phyxio_io, "idle")
 
     return final_text, interrupts
 
@@ -461,7 +498,7 @@ def main() -> None:
 
         while True:
             try:
-                final_text, interrupts = stream_updates(app, payload, base_config)
+                final_text, interrupts = stream_updates(app, payload, base_config, phyxio_io)
             except Exception as err:
                 if is_tool_call_history_error(err):
                     new_thread = f"run-{uuid.uuid4().hex[:10]}"
@@ -470,7 +507,7 @@ def main() -> None:
                         "[runner] recovered from invalid stored tool-call history; "
                         f"switched to thread_id={new_thread} and retrying."
                     )
-                    final_text, interrupts = stream_updates(app, payload, base_config)
+                    final_text, interrupts = stream_updates(app, payload, base_config, phyxio_io)
                 else:
                     raise
             if interrupts:
@@ -487,7 +524,7 @@ def main() -> None:
         if final_text:
             final_text = strip_citations_and_references(strip_markdown(final_text))
             print(f"\n***************\n\nMAYA: {final_text}")
-            speak_output(tts, phyxio_io, final_text)
+            speak_output(tts, phyxio_io, final_text, end_interaction=True)
 
 
 if __name__ == "__main__":

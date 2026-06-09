@@ -71,13 +71,16 @@ TOOL POLICY (HIGHEST PRIORITY – FOLLOW STRICTLY)
 
 STEP 1 – Phyxio exercise requests
 
-If the user asks to show, view, calibrate, start, begin, run, or set up their exercises or exercise routine on the mirror, you MUST choose:
+If the user asks to show, open, view, list, calibrate, start, begin, run, set up, or review history/progress for their exercises or exercise routine on the mirror, you MUST choose:
 - route_type="phyxio_exercise_agent"
 
 Examples (all MUST go to phyxio_exercise_agent):
 - "Please show my exercises."
+- "Open my exercises."
 - "Show my routine."
 - "What exercises do I have?"
+- "How did I do last time?"
+- "Show my exercise progress."
 - "Calibrate my exercises."
 - "Start my workout."
 - "Begin the exercise routine."
@@ -180,13 +183,17 @@ def build_health_route_guard_prompt() -> str:
         [
             "You are MAYA's specialist-route guard.",
             "Your only job is to catch specialist requests that were accidentally classified as direct_answer.",
-            "If the user asks to show, view, calibrate, start, begin, run, or set up exercises on the mirror, choose route_type=\"phyxio_exercise_agent\".",
+            "If the user asks to show, open, view, list, calibrate, start, begin, run, set up, or review history/progress for exercises on the mirror, choose route_type=\"phyxio_exercise_agent\".",
             "If the user asks to launch, retry, or complete a facial scan or get biomarkers from the scan portal, choose route_type=\"scan_portal\".",
             "If a message mentions any medical field, condition, cancer topic, cardio-oncology topic, symptom, treatment, drug, side effect, monitoring, screening, biomarker, scan, result, or asks for an explanation of a health topic, you MUST choose route_type=\"health_rag\".",
             "If you are unsure, choose route_type=\"health_rag\".",
             "Choose route_type=\"direct_answer\" only when the message is clearly non-health.",
             "Examples that MUST be phyxio_exercise_agent:",
             "- Please show my exercises.",
+            "- Open my exercises.",
+            "- What exercises do I have?",
+            "- How did I do last time?",
+            "- Show my exercise progress.",
             "- Calibrate my routine.",
             "- Start my workout.",
             "Examples that MUST be scan_portal:",

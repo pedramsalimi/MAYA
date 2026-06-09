@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import os
 from typing import Any, Dict, Mapping, Sequence
 
 from dotenv import load_dotenv
@@ -14,8 +15,15 @@ load_dotenv()
 
 AGENT_ID = "phyxio_exercise_agent"
 DEFAULT_MODEL = "gpt-4o-mini"
-DEFAULT_TOOLS: Sequence[str] = ("show_exercises", "calibrate_exercises", "start_exercises")
-ROUTINE_ID = "6"
+DEFAULT_TOOLS: Sequence[str] = (
+    "show_exercises",
+    "calibrate_exercises",
+    "start_exercises",
+    "list_exercises",
+    "get_exercise_history",
+)
+ROUTINE_ID = os.getenv("MAYA_PHYXIO_ROUTINE_ID", "").strip()
+FALLBACK_ROUTINE_ID = "6"
 
 
 def _to_text(value: Any) -> str:
@@ -27,23 +35,309 @@ def _to_text(value: Any) -> str:
         return str(value)
 
 
-def _call_service(action: str) -> str:
+def _normalize_routine_payload(data: Any) -> dict[str, Any]:
+    if isinstance(data, bytes):
+        data = data.decode("utf-8")
+    if isinstance(data, str):
+        return json.loads(data)
+    if isinstance(data, dict):
+        return data
+    raise TypeError(f"Unexpected routine list type: {type(data).__name__}")
+
+
+def _routine_candidates(routine_id: str | None = None) -> list[str]:
+    candidates: list[str] = []
+    for value in (routine_id, ROUTINE_ID, FALLBACK_ROUTINE_ID):
+        text = str(value or "").strip()
+        if text and text not in candidates:
+            candidates.append(text)
+    return candidates
+
+
+def _resolve_routine_id(routine_id: str | None = None, data: dict[str, Any] | None = None) -> str:
+    if data is None:
+        data = _get_routine_list()
+
+    error = data.get("error")
+    if error:
+        raise RuntimeError(str(error))
+
+    routines = data.get("routines") or {}
+    if not isinstance(routines, dict) or not routines:
+        raise RuntimeError("No assigned Phyxio routines were returned.")
+
+    for candidate in _routine_candidates(routine_id):
+        if candidate in routines:
+            return candidate
+        try:
+            numeric_candidate = str(int(candidate))
+        except (TypeError, ValueError):
+            numeric_candidate = ""
+        if numeric_candidate and numeric_candidate in routines:
+            return numeric_candidate
+
+    return str(next(iter(routines.keys())))
+
+
+def _call_service(action: str, routine_id: str | None = None) -> str:
     try:
         service = get_phyxio_service()
     except Exception as exc:
         return f"Phyxio service unavailable: {exc}"
 
     try:
+        resolved_routine_id = _resolve_routine_id(routine_id)
         if action == "show":
-            return _to_text(service.show_routine(ROUTINE_ID))
+            return _to_text(service.show_routine(resolved_routine_id))
         if action == "calibrate":
-            return _to_text(service.calibrate_routine(ROUTINE_ID))
+            return _to_text(service.calibrate_routine(resolved_routine_id))
         if action == "start":
-            return _to_text(service.run_routine(ROUTINE_ID))
+            return _to_text(service.run_routine(resolved_routine_id))
     except Exception as exc:
         return f"Phyxio action '{action}' failed: {exc}"
 
     return f"Unknown Phyxio action '{action}'."
+
+
+def _get_routine_list() -> dict[str, Any]:
+    service = get_phyxio_service()
+    if hasattr(service, "get_routine_list"):
+        data = service.get_routine_list()
+    else:
+        data = service._phyxio.routine.get_list()
+
+    return _normalize_routine_payload(data)
+
+
+def _get_session_history(page: int = 1) -> dict[str, Any]:
+    service = get_phyxio_service()
+    get_sessions = getattr(service, "get_sessions", None)
+    if not callable(get_sessions):
+        raise RuntimeError("Phyxio session history is not available in this connector version.")
+    return _normalize_routine_payload(get_sessions(page=page))
+
+
+def _format_goal(value: Any, unit: str) -> str:
+    text = str(value or "").strip()
+    if not text or text in {"0", "None", "null"}:
+        return ""
+    return f"{text} {unit}"
+
+
+def _brief_description(value: Any, max_chars: int = 120) -> str:
+    text = " ".join(str(value or "").split())
+    if not text:
+        return ""
+    first_sentence = text.split(". ", 1)[0].rstrip(".")
+    if len(first_sentence) <= max_chars:
+        return first_sentence
+    return first_sentence[: max_chars - 1].rstrip() + "."
+
+
+def _parse_page(value: Any) -> int:
+    text = str(value or "").strip()
+    if not text:
+        return 1
+    try:
+        page = int(text)
+    except ValueError:
+        return 1
+    return max(page, 1)
+
+
+def _get_routine(data: dict[str, Any], routine_id: str | None = None) -> tuple[str, dict[str, Any]]:
+    resolved_routine_id = _resolve_routine_id(routine_id, data)
+    routines = data.get("routines") or {}
+    routine = routines.get(resolved_routine_id)
+    if not isinstance(routine, dict):
+        raise RuntimeError(f"Routine {resolved_routine_id} is not available.")
+    return resolved_routine_id, routine
+
+
+def _format_routine_exercises(data: dict[str, Any], routine_id: str | None = None) -> str:
+    error = data.get("error")
+    if error:
+        return f"I couldn't fetch your exercise list: {error}"
+
+    exercises = data.get("exercises") or {}
+    try:
+        resolved_routine_id, routine = _get_routine(data, routine_id)
+    except Exception as exc:
+        return f"I couldn't fetch your exercise list: {exc}"
+
+    routine_name = str(routine.get("name") or f"Routine {resolved_routine_id}").strip()
+    routine_exercises = routine.get("exercises") or []
+    if not routine_exercises:
+        return f"{routine_name} does not currently list any exercises."
+
+    lines = [f"Your current routine is {routine_name}. Exercises:"]
+    for index, item in enumerate(routine_exercises, start=1):
+        exercise_id = str(item.get("id") or "").strip()
+        exercise = exercises.get(exercise_id) or exercises.get(item.get("id")) or {}
+        name = str(exercise.get("name") or f"Exercise {exercise_id or index}").strip()
+        description = str(exercise.get("description") or "").strip()
+        goals = [
+            goal
+            for goal in (
+                _format_goal(item.get("iterations"), "repetitions"),
+                _format_goal(item.get("runtime"), "seconds max"),
+            )
+            if goal
+        ]
+        calibration = "calibration needed" if exercise.get("needs_calibration") else ""
+        details = ", ".join(part for part in [*goals, calibration] if part)
+        line = f"{index}. {name}"
+        if details:
+            line += f" ({details})"
+        if description:
+            line += f": {description}"
+        lines.append(line)
+
+    return "\n".join(lines)
+
+
+def _format_spoken_routine_summary(data: dict[str, Any], routine_id: str | None = None) -> str:
+    error = data.get("error")
+    if error:
+        return f"I couldn't fetch your exercise list: {error}"
+
+    exercises = data.get("exercises") or {}
+    try:
+        resolved_routine_id, routine = _get_routine(data, routine_id)
+    except Exception as exc:
+        return f"I couldn't fetch your exercise list: {exc}"
+
+    routine_name = str(routine.get("name") or f"Routine {resolved_routine_id}").strip()
+    routine_exercises = routine.get("exercises") or []
+    if not routine_exercises:
+        return f"{routine_name} does not currently list any exercises."
+
+    count = len(routine_exercises)
+    plural = "s" if count != 1 else ""
+    lines = [f"Your current routine is {routine_name}, with {count} exercise{plural}."]
+    for index, item in enumerate(routine_exercises, start=1):
+        exercise_id = str(item.get("id") or "").strip()
+        exercise = exercises.get(exercise_id) or exercises.get(item.get("id")) or {}
+        name = str(exercise.get("name") or f"Exercise {exercise_id or index}").strip()
+        goals = [
+            goal
+            for goal in (
+                _format_goal(item.get("iterations"), "repetitions"),
+                _format_goal(item.get("runtime"), "seconds max"),
+            )
+            if goal
+        ]
+        description = _brief_description(exercise.get("description"))
+        details = ", ".join(goals)
+        line = f"{index}. {name}"
+        if details:
+            line += f": {details}"
+        if description:
+            line += f". {description}"
+        lines.append(line)
+    return "\n".join(lines)
+
+
+def _format_duration(seconds: Any) -> str:
+    try:
+        total = int(float(seconds))
+    except (TypeError, ValueError):
+        return ""
+    if total <= 0:
+        return ""
+    minutes, remainder = divmod(total, 60)
+    if minutes and remainder:
+        return f"{minutes} min {remainder} sec"
+    if minutes:
+        return f"{minutes} min"
+    return f"{remainder} sec"
+
+
+def _format_session_date(value: Any) -> str:
+    text = str(value or "").strip()
+    if not text:
+        return "Unknown date"
+    return text.replace("T", " ").replace("Z", "").split("+", 1)[0]
+
+
+def _exercise_lookup(data: dict[str, Any]) -> dict[str, str]:
+    exercises = data.get("exercises") or {}
+    if not isinstance(exercises, dict):
+        return {}
+    lookup: dict[str, str] = {}
+    for exercise_id, exercise in exercises.items():
+        if isinstance(exercise, dict):
+            name = str(exercise.get("name") or "").strip()
+            if name:
+                lookup[str(exercise_id)] = name
+    return lookup
+
+
+def _format_exercise_history(
+    session_data: dict[str, Any],
+    routine_data: dict[str, Any] | None = None,
+    max_sessions: int = 3,
+) -> str:
+    error = session_data.get("error")
+    if error:
+        return f"I couldn't fetch your exercise history: {error}"
+
+    sessions = session_data.get("sessions") or []
+    if not isinstance(sessions, list) or not sessions:
+        return "I couldn't find any previous Phyxio exercise sessions yet."
+
+    exercise_names = _exercise_lookup(routine_data or {})
+    page = session_data.get("page")
+    prefix = "Recent exercise sessions"
+    if page:
+        prefix += f" (page {page})"
+
+    lines = [f"{prefix}:"]
+    for session in sessions[:max_sessions]:
+        if not isinstance(session, dict):
+            continue
+        date = _format_session_date(session.get("date"))
+        routine_id = str(session.get("routine_id") or "").strip()
+        results = session.get("results") or []
+        if not isinstance(results, list):
+            results = []
+
+        completed = sum(
+            1
+            for result in results
+            if isinstance(result, dict) and str(result.get("status") or "").lower() == "completed"
+        )
+        total = len(results)
+        header = f"- {date}"
+        if routine_id:
+            header += f", routine {routine_id}"
+        if total:
+            header += f": {completed}/{total} completed"
+        lines.append(header)
+
+        for result in results[:4]:
+            if not isinstance(result, dict):
+                continue
+            exercise_id = str(result.get("exercise_id") or "").strip()
+            name = exercise_names.get(exercise_id) or f"Exercise {exercise_id or '?'}"
+            status = str(result.get("status") or "unknown").replace("_", " ")
+            goal_iter = result.get("goal_iter")
+            done_iter = result.get("done_iter")
+            elapsed = _format_duration(result.get("elapsed_time"))
+            parts = [status]
+            if goal_iter is not None or done_iter is not None:
+                parts.append(f"{done_iter or 0}/{goal_iter or 0} reps")
+            if elapsed:
+                parts.append(elapsed)
+            lines.append(f"  {name}: {', '.join(parts)}")
+
+        if len(results) > 4:
+            lines.append(f"  Plus {len(results) - 4} more result(s).")
+
+    if len(sessions) > max_sessions:
+        lines.append(f"I found {len(sessions)} sessions on this page; showing the latest {max_sessions}.")
+
+    return "\n".join(lines)
 
 
 def _select_mirror_action(user_text: str) -> str | None:
@@ -83,7 +377,39 @@ def _select_mirror_action(user_text: str) -> str | None:
     if any(
         phrase in text
         for phrase in (
+            "history",
+            "progress",
+            "session",
+            "sessions",
+            "last time",
+            "previous exercise",
+            "previous workout",
+            "past exercise",
+            "past workout",
+            "how did i do",
+        )
+    ):
+        return "history"
+    if any(
+        phrase in text
+        for phrase in (
+            "list",
+            "how many exercises",
+            "what exercises",
+            "which exercises",
+            "current exercises",
+            "exercise list",
+            "what is in my routine",
+            "what's in my routine",
+            "tell me my exercises",
+        )
+    ):
+        return "list"
+    if any(
+        phrase in text
+        for phrase in (
             "show",
+            "open",
             "view",
             "see",
             "what exercises",
@@ -109,34 +435,65 @@ def _action_response(action: str, service_result: str) -> str:
             "I'm starting your exercise routine now.\n\n"
             "Move at a comfortable pace, and stop if you feel pain or dizziness."
         )
+    if action == "list":
+        return service_result
+    if action == "history":
+        return service_result
     return service_result
 
 
 @tool("show_exercises")
-def show_exercises(_: str = ROUTINE_ID) -> str:
+def show_exercises(routine_id: str = "") -> str:
     """Show the configured exercise routine on the mirror."""
 
-    return _call_service("show")
+    return _call_service("show", routine_id)
 
 
 @tool("calibrate_exercises")
-def calibrate_exercises(_: str = ROUTINE_ID) -> str:
+def calibrate_exercises(routine_id: str = "") -> str:
     """Calibrate the configured exercise routine on the mirror."""
 
-    return _call_service("calibrate")
+    return _call_service("calibrate", routine_id)
 
 
 @tool("start_exercises")
-def start_exercises(_: str = ROUTINE_ID) -> str:
+def start_exercises(routine_id: str = "") -> str:
     """Start the configured exercise routine on the mirror."""
 
-    return _call_service("start")
+    return _call_service("start", routine_id)
 
+
+@tool("list_exercises")
+def list_exercises(routine_id: str = "") -> str:
+    """List the exercises in the user's configured Phyxio routine."""
+
+    try:
+        return _format_spoken_routine_summary(_get_routine_list(), routine_id)
+
+    except Exception as exc:
+        return f"I couldn't fetch your exercise list: {exc}"
+
+
+@tool("get_exercise_history")
+def get_exercise_history(page: str = "1") -> str:
+    """Summarize recent Phyxio exercise session history."""
+
+    try:
+        routine_data = None
+        try:
+            routine_data = _get_routine_list()
+        except Exception:
+            routine_data = None
+        return _format_exercise_history(_get_session_history(_parse_page(page)), routine_data)
+    except Exception as exc:
+        return f"I couldn't fetch your exercise history: {exc}"
 
 _TOOL_REGISTRY: Mapping[str, BaseTool] = {
     "show_exercises": show_exercises,
     "calibrate_exercises": calibrate_exercises,
     "start_exercises": start_exercises,
+    "list_exercises": list_exercises,
+    "get_exercise_history": get_exercise_history,
 }
 
 
@@ -153,6 +510,14 @@ def _normalize_tools(raw: Sequence[str] | str) -> Sequence[str]:
     return tuple(str(tool_id) for tool_id in raw)
 
 
+def _include_default_tools(tool_ids: Sequence[str]) -> Sequence[str]:
+    ordered = list(tool_ids)
+    for tool_id in DEFAULT_TOOLS:
+        if tool_id not in ordered:
+            ordered.append(tool_id)
+    return tuple(ordered)
+
+
 def _resolve_tools(tool_ids: Sequence[str]) -> Sequence[BaseTool]:
     resolved: list[BaseTool] = []
     missing: list[str] = []
@@ -165,6 +530,14 @@ def _resolve_tools(tool_ids: Sequence[str]) -> Sequence[BaseTool]:
     if missing:
         raise RuntimeError(f"Unknown tools for '{AGENT_ID}': {', '.join(missing)}")
     return resolved
+
+
+def _invoke_registered_tool(tool_name: str) -> str:
+    tool_obj = _TOOL_REGISTRY[tool_name]
+    func = getattr(tool_obj, "func", None)
+    if callable(func):
+        return _to_text(func(""))
+    return _to_text(tool_obj.invoke({}))
 
 
 def _extract_latest_user_text(messages: Any) -> str:
@@ -240,13 +613,15 @@ class _PhyxioExerciseNode:
                 }
             return {"messages": [AIMessage(content=answer)]}
 
-        if selected_action in {"show", "calibrate", "start"}:
+        if selected_action in {"show", "calibrate", "start", "list", "history"}:
             tool_name = {
                 "show": "show_exercises",
                 "calibrate": "calibrate_exercises",
                 "start": "start_exercises",
+                "list": "list_exercises",
+                "history": "get_exercise_history",
             }[selected_action]
-            answer = _action_response(selected_action, _TOOL_REGISTRY[tool_name].invoke({}))
+            answer = _action_response(selected_action, _invoke_registered_tool(tool_name))
             if tool_call_id:
                 return {
                     "messages": [
@@ -322,7 +697,7 @@ def build(spec: Dict[str, Any] | None = None):
 
     prompt = _require_prompt(spec)
     model_name = str(spec.get("model") or DEFAULT_MODEL)
-    tool_ids = _normalize_tools(spec.get("tools") or DEFAULT_TOOLS)
+    tool_ids = _include_default_tools(_normalize_tools(spec.get("tools") or DEFAULT_TOOLS))
     tools = _resolve_tools(tool_ids)
 
     llm = AzureChatOpenAI(

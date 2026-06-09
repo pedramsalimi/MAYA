@@ -7,6 +7,7 @@ from typing import Any, Dict, Optional
 from dotenv import load_dotenv
 from flask import Flask, jsonify, request
 from maya.framework.supervisor import prompts
+from flask_cors import CORS
 from maya.framework.supervisor.factory import build_supervisor
 from maya.framework.supervisor.utils import (
     strip_citations_and_references,
@@ -16,6 +17,7 @@ from maya.framework.supervisor.utils import (
 load_dotenv()
 
 app = Flask(__name__)
+CORS(app, origins=["http://127.0.0.1:3000", "http://localhost:3000"])
 
 _state_lock = Lock()
 _run_state: Dict[str, Any] = {"graph": None, "base_config": None}
@@ -23,8 +25,8 @@ _run_state: Dict[str, Any] = {"graph": None, "base_config": None}
 
 def _init_run_copy():
     """Create the supervisor graph and its base config (mirrors run.py setup)."""
-    user_id = os.getenv("MAYA_RUN_USER_ID", "web_user")
-    thread_id = os.getenv("MAYA_RUN_THREAD_ID", "web_thread")
+    user_id = os.getenv("MAYA_RUN_USER_ID", "web_user1")
+    thread_id = os.getenv("MAYA_RUN_THREAD_ID", "web_thread1")
     base_config = {
         "configurable": {"thread_id": thread_id, "user_id": user_id},
         "recursion_limit": 40,
@@ -123,6 +125,7 @@ def conversation():
     try:
         response_text = _run_conversation(graph, base_config, user_message)
     except Exception as exc:  # pragma: no cover - surface runtime failures
+        print(exc)
         return jsonify({"error": f"Conversation failed: {exc}"}), 500
 
     return jsonify({"response": response_text})
