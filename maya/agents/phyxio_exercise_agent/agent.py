@@ -700,12 +700,13 @@ def build(spec: Dict[str, Any] | None = None):
     tool_ids = _include_default_tools(_normalize_tools(spec.get("tools") or DEFAULT_TOOLS))
     tools = _resolve_tools(tool_ids)
 
-    llm = AzureChatOpenAI(
-        azure_deployment=model_name,
-        temperature=0,
-        api_version="2024-12-01-preview",
-        azure_endpoint="https://mayaagent.openai.azure.com/",
-    )
+    # llm = AzureChatOpenAI(
+    #     azure_deployment=model_name,
+    #     temperature=0,
+    #     api_version="2024-12-01-preview",
+    #     azure_endpoint="https://mayaagent.openai.azure.com/",
+    # )
+    llm = AzureChatOpenAI(azure_deployment="gpt-4.1-mini", temperature=0, api_version="2025-04-01-preview", azure_endpoint="https://socet-air-6721-resource.services.ai.azure.com/")
 
     runner = create_agent(
         model=llm,

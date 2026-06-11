@@ -40,6 +40,12 @@ class DisambiguationDecision(BaseModel):
     )
 
 
+class ClarificationRequest(BaseModel):
+    clarification_question: str = Field(
+        description="A single concise question that gathers the missing scope or clinical context before answering."
+    )
+
+
 class RetrieveLocalLiterature(AgentMiddleware[HealthRagState, Any]):
     state_schema = HealthRagState
 
@@ -101,6 +107,7 @@ def health_rag_prompt(request: ModelRequest) -> str:
             "Answer only from the retrieved local literature below.",
             "Answer with scientific details in 4 to 5 sentences.",
             "Do not invent facts. If the retrieved context is insufficient, say so briefly.",
+            "For Horizon Europe project context, do not mention or attribute advice to country-specific guideline bodies, especially US bodies such as the American Heart Association or ACC/AHA. Summarize the evidence-based health principles without naming those organizations unless the user explicitly asks about them.",
             f"Retrieved local literature:\n{context}",
         ]
     )
@@ -158,6 +165,57 @@ class HealthRagHandle:
             pass
         return DisambiguationDecision(needs_clarification=False)
 
+    def draft_clarification_question(
+        self,
+        question: str,
+        *,
+        model: Any,
+        conversation_context: str = "",
+    ) -> str:
+        if not question.strip() or model is None:
+            return ""
+
+        prompt = ChatPromptTemplate.from_messages(
+            [
+                (
+                    "system",
+                    "You write MAYA's required clarification question before the health literature assistant answers.\n"
+                    "Use the ontology below as the policy source.\n"
+                    "Ask exactly one brief, user-facing question.\n"
+                    "The question should clarify whether the user wants general education or guidance for their own situation, "
+                    "and should request only the most relevant missing clinical context.\n"
+                    "Do not answer the health question.\n"
+                    "Return a ClarificationRequest.\n\n"
+                    "{ontology}",
+                ),
+                (
+                    "human",
+                    "Recent health conversation context:\n{conversation_context}\n\n"
+                    "Current user question:\n{question}",
+                ),
+            ]
+        )
+        try:
+            chain = prompt | model.with_structured_output(ClarificationRequest, strict=True)
+            request = chain.invoke(
+                {
+                    "question": question,
+                    "conversation_context": conversation_context,
+                    "ontology": self.ontology_block,
+                }
+            )
+            if isinstance(request, ClarificationRequest):
+                return request.clarification_question.strip()
+        except Exception:
+            decision = self.assess_clarification(
+                question,
+                model=model,
+                conversation_context=conversation_context,
+            )
+            if decision.clarification_question.strip():
+                return decision.clarification_question.strip()
+        return ""
+
 
 def build(spec: dict[str, Any] | None = None) -> HealthRagHandle:
     root_dir = Path(__file__).resolve().parents[2]
@@ -178,12 +236,14 @@ def build(spec: dict[str, Any] | None = None) -> HealthRagHandle:
         search_type="similarity_score_threshold" if vector_config.backend == "pgvector" else "similarity",
         search_kwargs={"k": 4, "score_threshold": 0.28} if vector_config.backend == "pgvector" else {"k": 4},
     )
-    llm = AzureChatOpenAI(
-        azure_deployment="gpt-4o-mini",
-        temperature=0,
-        api_version="2024-12-01-preview",
-        azure_endpoint="https://mayaagent.openai.azure.com/",
-    )
+    # llm = AzureChatOpenAI(
+    #     azure_deployment="gpt-4o-mini",
+    #     temperature=0,
+    #     api_version="2024-12-01-preview",
+    #     azure_endpoint="https://mayaagent.openai.azure.com/",
+    # )
+    llm = AzureChatOpenAI(azure_deployment="gpt-4.1-mini", temperature=0, api_version="2025-04-01-preview", azure_endpoint="https://socet-air-6721-resource.services.ai.azure.com/")
+
     agent = create_agent(
         llm,
         tools=[],

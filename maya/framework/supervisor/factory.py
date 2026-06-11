@@ -36,7 +36,8 @@ from langchain_ollama import ChatOllama
 
 load_dotenv()
 
-model = AzureChatOpenAI(azure_deployment="gpt-4o-mini", temperature=0, api_version="2024-12-01-preview", azure_endpoint="https://mayaagent.openai.azure.com/")
+# model = AzureChatOpenAI(azure_deployment="gpt-4o-mini", temperature=0, api_version="2024-12-01-preview", azure_endpoint="https://mayaagent.openai.azure.com/")
+model = AzureChatOpenAI(azure_deployment="gpt-4.1-mini", temperature=0, api_version="2025-04-01-preview", azure_endpoint="https://socet-air-6721-resource.services.ai.azure.com/")
 
 # SCAN_PORTAL_URL = "https://scan.jafarapp.com"
 SCAN_PORTAL_URL = "https://plugin-rc.intelliprove.com/?action_token=eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJ1c2VyIjp7ImVtYWlsIjoiIiwiY3VzdG9tZXIiOiJTRUxGQkFDSy1ERVYiLCJncm91cCI6InVzZXIiLCJtYXhfbWVhc3VyZW1lbnRfY291bnQiOjk5OTksInVzZXJfaWQiOiJiYzc1OTY0MzBjZWE0OTEyYTdmNTI5NzczN2Q4ZmFhYSIsImF1dGgwX3VzZXJfaWQiOm51bGx9LCJtZXRhIjp7fSwiZXhwIjoxNzYzNTgzNDc3fQ.siccXuZLfbw4wdMryddlCovL0PZOya7tsKlhVIHr1hI&language=en&duration=30"
@@ -378,20 +379,18 @@ def build_supervisor():
         if agent is None:
             return send("Health specialist not available right now.")
 
-        decision = agent.assess_clarification(
+        prompt = agent.draft_clarification_question(
             question,
             model=model,
             conversation_context=health_context,
         )
-        prompt = decision.clarification_question.strip()
-        if decision.needs_clarification and prompt:
-            clarification = interrupt(prompt)
-            if isinstance(clarification, list):
-                clarification = clarification[0] if clarification else ""
-            clarification_text = str(clarification or "").strip()
-            if not clarification_text:
-                return send(prompt)
-            question = f"Original question: {question}\nUser clarification: {clarification_text}"
+        clarification = interrupt(prompt)
+        if isinstance(clarification, list):
+            clarification = clarification[0] if clarification else ""
+        clarification_text = str(clarification or "").strip()
+        if not clarification_text:
+            return send(prompt)
+        question = f"Original question: {question}\nUser clarification: {clarification_text}"
 
         standalone_question = (
             f"{health_context}\n\nCurrent user question: {question}"
