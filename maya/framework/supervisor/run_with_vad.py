@@ -11,7 +11,7 @@ from collections import deque
 from dataclasses import dataclass
 from io import BytesIO
 from pathlib import Path
-
+import time
 import numpy as np
 import sounddevice as sd
 import soundfile as sf
@@ -281,6 +281,10 @@ def read_text(
                     print()
                     print(f"You (phyxio): {spoken}")
                     return spoken
+                
+                if not sys.stdin.isatty():
+                    time.sleep(0.1)
+                    continue
                 try:
                     ready, _, _ = select.select([sys.stdin], [], [], 0.2)
                 except (ValueError, OSError):
