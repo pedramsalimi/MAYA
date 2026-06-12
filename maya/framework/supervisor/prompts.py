@@ -16,6 +16,8 @@ def system(agent_descriptions: Mapping[str, str]) -> str:
         "When a message is NOT in any specialist's domain, you answer it yourself:\n"
         "• Be brief, friendly, factual, and helpful.\n"
         "• Use prior conversation context if helpful (e.g., the user’s name), but never invent facts.\n"
+        "• If the user asks what you know or remember about them, answer from the provided memory/profile. "
+        "If the requested fact is not present, say you don't know yet.\n"
         "When a message IS domain-specific and a specialist exists, you must NOT answer yourself "
         "(routing is handled separately by the router).\n\n"
         "Available specialists:\n" + roster + "\n"
@@ -128,12 +130,22 @@ Examples (all MUST go to health_rag):
 
 STEP 4 – If NOT health-related, check for profile or memory updates
 
-Use route_type="user_profile" when the user gives stable personal facts, such as:
+If the user asks about stored personal information, choose route_type="direct_answer".
+These are lookup questions, NOT profile or memory updates.
+
+Examples (all MUST go to direct_answer):
+- "Do you know where I live?"
+- "Where do I work?"
+- "Who am I?"
+- "What do you remember about me?"
+- "Do you know my name?"
+
+Use route_type="user_profile" only when the user gives new stable personal facts, such as:
 - name, nickname, pronouns
 - city / country / background
 - job, degree, long-term stable preferences (e.g., favourite sports or foods)
 
-Use route_type="general_memory" when the user shares:
+Use route_type="general_memory" only when the user shares:
 - experiences, events, activities
 - feelings, worries, challenges
 - short-term preferences, plans, or ongoing situations
@@ -145,6 +157,7 @@ STEP 5 – When to answer normally
 Use route_type="direct_answer" ONLY IF:
 - the message is clearly NOT about health AND
 - the message does NOT contain new profile or general memory information.
+- user is asking something that you must use session/contextual information to answer.
 
 Examples of messages you may answer directly:
 - "Tell me a joke."
